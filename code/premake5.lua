@@ -182,7 +182,11 @@ end)
 		-- Missing XML comment for publicly visible type or member
 		disablewarnings 'CS1591'
 
+<<<<<<< Updated upstream
 		clr 'Unsafe'
+=======
+		--flags { 'Unsafe' }
+>>>>>>> Stashed changes
 
 		files { "client/clrcore/*.cs", "client/clrcore/Math/*.cs" }
 
