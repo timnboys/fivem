@@ -50,12 +50,18 @@ namespace CitizenFX.Core
 
 		internal static void AddScript(BaseScript script)
 		{
-			ms_definedScripts.Add(script);
+			if (!ms_definedScripts.Contains(script))
+			{
+				ms_definedScripts.Add(script);
+			}
 		}
 
 		internal static void RemoveScript(BaseScript script)
 		{
-			ms_definedScripts.Remove(script);
+			if (ms_definedScripts.Contains(script))
+			{
+				ms_definedScripts.Remove(script);
+			}
 		}
 
 		public void CreateAssembly(byte[] assemblyData, byte[] symbolData)
@@ -149,7 +155,7 @@ namespace CitizenFX.Core
 
 		public static void AddDelay(int delay, AsyncCallback callback)
 		{
-			ms_delays.Add(Tuple.Create(DateTime.Now.AddMilliseconds(delay), callback));
+			ms_delays.Add(Tuple.Create(DateTime.UtcNow.AddMilliseconds(delay), callback));
 		}
 
 		public void Tick()
@@ -159,7 +165,7 @@ namespace CitizenFX.Core
 				ScriptContext.GlobalCleanUp();
 
 				var delays = ms_delays.ToArray();
-				var now = DateTime.Now;
+				var now = DateTime.UtcNow;
 
 				foreach (var delay in delays)
 				{
@@ -191,12 +197,13 @@ namespace CitizenFX.Core
 		{
 			try
 			{
-				var obj = MsgPackDeserializer.Deserialize(argsSerialized) as List<object> ?? (IEnumerable<object>)new object[0];
+				var obj = MsgPackDeserializer.Deserialize(argsSerialized, netSource: (sourceString.StartsWith("net") ? sourceString : null)) as List<object> ?? (IEnumerable<object>)new object[0];
 
 				var scripts = ms_definedScripts.ToArray();
 
-				// TODO: store source someplace
 				var objArray = obj.ToArray();
+
+				NetworkFunctionManager.HandleEventTrigger(eventName, objArray, sourceString);
 
 				foreach (var script in scripts)
 				{
@@ -288,6 +295,12 @@ namespace CitizenFX.Core
 			Marshal.Release(ptr);
 
 			return obj;
+		}
+
+		[SecurityCritical]
+		public override object InitializeLifetimeService()
+		{
+			return null;
 		}
 	}
 }

@@ -3,6 +3,7 @@
 #include <ResourceManager.h>
 #include <ResourceFilesComponent.h>
 #include <ResourceStreamComponent.h>
+#include <ResourceMetaDataComponent.h>
 
 #include <ServerInstanceBase.h>
 
@@ -49,7 +50,15 @@ static InitFunction initFunction([]()
 					return;
 				}
 
-				if (resource->GetState() != fx::ResourceState::Started)
+				if (resource->GetState() != fx::ResourceState::Started && resource->GetState() != fx::ResourceState::Starting)
+				{
+					return;
+				}
+
+				auto metaData = resource->GetComponent<fx::ResourceMetaDataComponent>();
+				auto iv = metaData->GetEntries("server_only");
+
+				if (iv.begin() != iv.end())
 				{
 					return;
 				}
@@ -94,6 +103,8 @@ static InitFunction initFunction([]()
 				{ "fileServer", "https://%s/files" },
 				{ "resources", resources }
 			}));
+
+			cb(json(nullptr));
 		});
 	}, 5000);
 });

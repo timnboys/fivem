@@ -88,6 +88,7 @@ print("const _ri = Citizen.resultAsInteger();")
 print("const _rf = Citizen.resultAsFloat();")
 print("const _s = Citizen.resultAsString();")
 print("const _rv = Citizen.resultAsVector();")
+print("const _ro = Citizen.resultAsObject();")
 print("const _in = Citizen.invokeNative;")
 print("const _ii = Citizen.pointerValueIntInitialized;")
 print("const _fi = Citizen.pointerValueFloatInitialized;")
@@ -102,6 +103,9 @@ print("}\n")
 print("function _ts(num) {")
 print("\tif (num == 0 || !num) { // workaround for users calling string parameters with '0', also nil being translated")
 print("\t\treturn null;")
+print("\t}")
+print("\tif (ArrayBuffer.isView(num) || num instanceof ArrayBuffer) { // these are handled as strings internally")
+print("\t\treturn num;")
 print("\t}")
 print("\treturn num.toString();")
 print("}")
@@ -204,6 +208,8 @@ local function printReturnType(type)
 		return '_ri'
 	elseif type.nativeType == 'Any*' then
 		return '_ri'
+	elseif type.nativeType == 'object' then
+		return '_ro'
 	end
 end
 
@@ -249,8 +255,8 @@ local function formatDocString(native)
 	end
 
 	if d.hasParams then
-		for n, v in pairs(d.params) do
-			l = l .. ' * @param ' .. n .. ' ' .. v .. '\n'
+		for _, v in ipairs(d.params) do
+			l = l .. ' * @param ' .. v[1] .. ' ' .. v[2] .. '\n'
 		end
 	end
 
@@ -266,7 +272,15 @@ end
 local function printNative(native)
 	local str = string.format("%swindow.%s = function (%s) {\n", formatDocString(native), printFunctionName(native), printArgumentList(native))
 
-	str = str .. string.format("\treturn _in(%s);\n", printInvocationArguments(native))
+	local preCall = ''
+	local postCall = ''
+
+	if native.returns and native.returns.nativeType == 'object' then
+		preCall = 'window.msgpack_unpack('
+		postCall = ')'
+	end
+
+	str = str .. string.format("\treturn %s_in(%s)%s;\n", preCall, printInvocationArguments(native), postCall)
 
 	str = str .. "};\n"
 

@@ -3,7 +3,7 @@
 #include <NetAddress.h>
 #include <NetBuffer.h>
 
-#include <enet/enet.h>
+#include <GameServerComms.h>
 
 #include <ComponentHolder.h>
 
@@ -11,11 +11,22 @@
 
 #include <any>
 
+#include <se/Security.h>
+
+#include <enet/enet.h>
+
+#define MAX_CLIENTS 64 // don't change this past 256 ever, also needs to be synced with client code
+
 namespace {
 	using namespace std::literals::chrono_literals;
 
+#ifdef _DEBUG
+	constexpr const auto CLIENT_DEAD_TIMEOUT = 86400s;
+	constexpr const auto CLIENT_VERY_DEAD_TIMEOUT = 86400s;
+#else
 	constexpr const auto CLIENT_DEAD_TIMEOUT = 10s;
 	constexpr const auto CLIENT_VERY_DEAD_TIMEOUT = 120s;
+#endif
 }
 
 #ifdef COMPILING_CITIZEN_SERVER_IMPL
@@ -26,11 +37,15 @@ namespace {
 
 namespace fx
 {
-	struct enet_peer_deleter
+	struct gs_peer_deleter
 	{
-		inline void operator()(ENetPeer* data)
+		inline void operator()(int* data)
 		{
-			enet_peer_reset(data);
+			gscomms_execute_callback_on_net_thread([=]()
+			{
+				gscomms_reset_peer(*data);
+				delete data;
+			});
 		}
 	};
 
@@ -39,7 +54,7 @@ namespace fx
 	public:
 		Client(const std::string& guid);
 
-		void SetPeer(ENetPeer* peer);
+		void SetPeer(int peer, const net::PeerAddress& peerAddress);
 
 		void SetNetId(uint32_t netId);
 
@@ -53,6 +68,16 @@ namespace fx
 		inline uint32_t GetNetId()
 		{
 			return m_netId;
+		}
+
+		inline uint32_t GetSlotId()
+		{
+			return m_slotId;
+		}
+
+		inline void SetSlotId(uint32_t slotId)
+		{
+			m_slotId = slotId;
 		}
 
 		inline uint32_t GetNetBase()
@@ -70,9 +95,9 @@ namespace fx
 			return m_peerAddress;
 		}
 
-		inline ENetPeer* GetPeer()
+		inline int GetPeer()
 		{
-			return (m_peer) ? m_peer.get() : nullptr;
+			return (m_peer) ? *m_peer.get() : 0;
 		}
 
 		inline const std::string& GetName()
@@ -129,6 +154,18 @@ namespace fx
 			m_identifiers.emplace_back(identifier);
 		}
 
+		inline auto EnterPrincipalScope()
+		{
+			std::vector<std::unique_ptr<se::ScopedPrincipal>> principals;
+
+			for (auto& identifier : this->GetIdentifiers())
+			{
+				principals.emplace_back(std::make_unique<se::ScopedPrincipal>(se::Principal{ fmt::sprintf("identifier.%s", identifier) }));
+			}
+
+			return std::move(principals);
+		}
+
 		const std::any& GetData(const std::string& key);
 
 		void SetData(const std::string& key, const std::any& data);
@@ -139,6 +176,8 @@ namespace fx
 		fwEvent<> OnAssignPeer;
 		fwEvent<> OnAssignTcpEndPoint;
 		fwEvent<> OnAssignConnectionToken;
+
+		fwEvent<> OnDrop;
 
 	private:
 		// a temporary token for tying HTTP connections to UDP connections
@@ -159,6 +198,9 @@ namespace fx
 		// the client's netid
 		uint32_t m_netId;
 
+		// the client's slot ID
+		uint32_t m_slotId;
+
 		// the client's netbase
 		uint32_t m_netBase;
 
@@ -169,7 +211,7 @@ namespace fx
 		std::string m_tcpEndPoint;
 
 		// the client's ENet peer
-		std::unique_ptr<ENetPeer, enet_peer_deleter> m_peer;
+		std::unique_ptr<int, gs_peer_deleter> m_peer;
 
 		// whether the client has sent a routing msg once
 		bool m_hasRouted;

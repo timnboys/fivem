@@ -9,6 +9,323 @@ Gets the current game timer in milliseconds.
 <returns>The game time.</returns>
 ]]
 
+native 'CREATE_RUNTIME_TXD'
+	arguments {
+		charPtr 'name'
+	}
+	apiset 'client'
+	returns 'long'
+	doc [[
+<summary>
+Creates a runtime texture dictionary with the specified name.
+
+Example:
+```lua
+local txd = CreateRuntimeTxd('meow')
+```
+</summary>
+<param name="name">The name for the runtime TXD.</param>
+<returns>A handle to the runtime TXD.</returns>
+]]
+
+native 'CREATE_RUNTIME_TEXTURE'
+	arguments {
+		long 'txd',
+		charPtr 'txn',
+		int 'width',
+		int 'height'
+	}
+	apiset 'client'
+	returns 'long'
+	doc [[
+<summary>
+Creates a blank runtime texture.
+</summary>
+<param name="txd">A handle to the runtime TXD to create the runtime texture in.</param>
+<param name="txn">The name for the texture in the runtime texture dictionary.</param>
+<param name="width">The width of the new texture.</param>
+<param name="height">The height of the new texture.</param>
+<returns>A runtime texture handle.</returns>
+]]
+
+native 'CREATE_RUNTIME_TEXTURE_FROM_DUI_HANDLE'
+	arguments {
+		long 'txd',
+		long 'txn',
+		charPtr 'duiHandle'
+	}
+	apiset 'client'
+	returns 'long'
+	doc [[
+<summary>
+Creates a runtime texture from a DUI handle.
+</summary>
+<param name="txd">A handle to the runtime TXD to create the runtime texture in.</param>
+<param name="txn">The name for the texture in the runtime texture dictionary.</param>
+<param name="duiHandle">The DUI handle returned from GET\_DUI\_HANDLE.</param>
+<returns>The runtime texture handle.</returns>
+]]
+
+native 'CREATE_RUNTIME_TEXTURE_FROM_IMAGE'
+	arguments {
+		long 'txd',
+		charPtr 'txn',
+		charPtr 'fileName'
+	}
+	apiset 'client'
+	returns 'long'
+	doc [[
+<summary>
+Creates a runtime texture from the specified file in the current resource.
+</summary>
+<param name="txd">A handle to the runtime TXD to create the runtime texture in.</param>
+<param name="txn">The name for the texture in the runtime texture dictionary.</param>
+<param name="fileName">The file name of an image to load. This should preferably be a PNG, and has to be specified as a `file` in the resource manifest.</param>
+<returns>A runtime texture handle.</returns>
+]]
+
+native 'GET_RUNTIME_TEXTURE_WIDTH'
+	arguments {
+		long 'tex'
+	}
+	apiset 'client'
+	returns 'int'
+	doc [[
+<summary>
+Gets the width of the specified runtime texture.
+</summary>
+<param name="tex">A handle to the runtime texture.</param>
+<returns>The width in pixels.</returns>
+]]
+
+native 'GET_RUNTIME_TEXTURE_HEIGHT'
+	arguments {
+		long 'tex'
+	}
+	apiset 'client'
+	returns 'int'
+	doc [[
+<summary>
+Gets the height of the specified runtime texture.
+</summary>
+<param name="tex">A handle to the runtime texture.</param>
+<returns>The height in pixels.</returns>
+]]
+
+native 'GET_RUNTIME_TEXTURE_PITCH'
+	arguments {
+		long 'tex'
+	}
+	apiset 'client'
+	returns 'int'
+	doc [[
+<summary>
+Gets the row pitch of the specified runtime texture, for use when creating data for `SET_RUNTIME_TEXTURE_ARGB_DATA`.
+</summary>
+<param name="tex">A handle to the runtime texture.</param>
+<returns>The row pitch in bytes.</returns>
+]]
+
+native 'SET_RUNTIME_TEXTURE_PIXEL'
+	arguments {
+		long 'tex',
+		int 'x',
+		int 'y',
+		int 'r',
+		int 'g',
+		int 'b',
+		int 'a'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Sets a pixel in the specified runtime texture. This will have to be committed using `COMMIT_RUNTIME_TEXTURE` to have any effect.
+</summary>
+<param name="tex">A handle to the runtime texture.</param>
+<param name="x">The X position of the pixel to change.</param>
+<param name="y">The Y position of the pixel to change.</param>
+<param name="r">The new R value (0-255).</param>
+<param name="g">The new G value (0-255).</param>
+<param name="b">The new B value (0-255).</param>
+<param name="a">The new A value (0-255).</param>
+]]
+
+native 'SET_RUNTIME_TEXTURE_ARGB_DATA'
+	arguments {
+		long 'tex',
+		charPtr 'buffer',
+		int 'length'
+	}
+	apiset 'client'
+	returns 'BOOL'
+	
+native 'COMMIT_RUNTIME_TEXTURE'
+	arguments {
+		long 'tex'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Commits the backing pixels to the specified runtime texture.
+</summary>
+<param name="tex">The runtime texture handle.</param>
+]]
+
+native 'CREATE_DUI'
+	arguments {
+		charPtr 'url',
+		int 'width',
+		int 'height'
+	}
+	apiset 'client'
+	returns 'long'
+	doc [[
+<summary>
+Creates a DUI browser. This can be used to draw on a runtime texture using CREATE\_RUNTIME\_TEXTURE\_FROM\_DUI\_HANDLE.
+</summary>
+<param name="url">The initial URL to load in the browser.</param>
+<param name="width">The width of the backing surface.</param>
+<param name="height">The height of the backing surface.</param>
+<returns>A DUI object.</returns>
+]]
+
+native 'SET_DUI_URL'
+	arguments {
+		long 'duiObject',
+		charPtr 'url'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Navigates the specified DUI browser to a different URL.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+<param name="url">The new URL.</param>
+]]
+
+native 'SEND_DUI_MESSAGE'
+	arguments {
+		long 'duiObject',
+		charPtr 'jsonString'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Sends a message to the specific DUI root page. This is similar to SEND\_NUI\_MESSAGE.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+<param name="jsonString">The message, encoded as JSON.</param>
+]]
+
+native 'GET_DUI_HANDLE'
+	arguments {
+		long 'duiObject'
+	}
+	apiset 'client'
+	returns 'charPtr'
+	doc [[
+<summary>
+Returns the NUI window handle for a specified DUI browser object.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+<returns>The NUI window handle, for use in e.g. CREATE\_RUNTIME\_TEXTURE\_FROM\_DUI\_HANDLE.</returns>
+]]
+
+native 'IS_DUI_AVAILABLE'
+	arguments {
+		long 'duiObject'
+	}
+	apiset 'client'
+	returns 'BOOL'
+	doc [[
+<summary>
+Returns whether or not a browser is created for a specified DUI browser object.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+<returns>A boolean indicating TRUE if the browser is created.</returns>
+]]
+
+native 'SEND_DUI_MOUSE_MOVE'
+	arguments {
+		long 'duiObject',
+		int 'x',
+		int 'y'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Injects a 'mouse move' event for a DUI object. Coordinates are in browser space.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+<param name="x">The mouse X position.</param>
+<param name="y">The mouse Y position.</param>
+]]
+
+native 'SEND_DUI_MOUSE_DOWN'
+	arguments {
+		long 'duiObject',
+		charPtr 'button'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Injects a 'mouse down' event for a DUI object. Coordinates are expected to be set using SEND\_DUI\_MOUSE\_MOVE.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+<param name="button">Either `'left'`, `'middle'` or `'right'`.</param>
+]]
+
+native 'SEND_DUI_MOUSE_UP'
+	arguments {
+		long 'duiObject',
+		charPtr 'button'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Injects a 'mouse up' event for a DUI object. Coordinates are expected to be set using SEND\_DUI\_MOUSE\_MOVE.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+<param name="button">Either `'left'`, `'middle'` or `'right'`.</param>
+]]
+
+native 'SEND_DUI_MOUSE_WHEEL'
+	arguments {
+		long 'duiObject',
+		int 'deltaY',
+		int 'deltaX'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Injects a 'mouse wheel' event for a DUI object.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+<param name="deltaY">The wheel Y delta.</param>
+<param name="deltaX">The wheel X delta.</param>
+]]
+
+native 'DESTROY_DUI'
+	arguments {
+		long 'duiObject'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Destroys a DUI browser.
+</summary>
+<param name="duiObject">The DUI browser handle.</param>
+]]
+
 native 'IS_DUPLICITY_VERSION'
 	arguments {}
 	apiset 'shared'
@@ -16,6 +333,34 @@ native 'IS_DUPLICITY_VERSION'
 	doc [[
 <summary>Gets whether or not this is the CitizenFX server.</summary>
 <returns>A boolean value.</returns>
+]]
+
+native 'ADD_REPLACE_TEXTURE'
+	arguments {
+		charPtr 'origTxd',
+		charPtr 'origTxn',
+		charPtr 'newTxd',
+		charPtr 'newTxn',
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Experimental natives, please do not use in a live environment.
+</summary>
+]]
+
+native 'REMOVE_REPLACE_TEXTURE'
+	arguments {
+		charPtr 'origTxd',
+		charPtr 'origTxn'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+<summary>
+Experimental natives, please do not use in a live environment.
+</summary>
 ]]
 
 native 'TRIGGER_EVENT_INTERNAL'
@@ -183,6 +528,34 @@ native 'SAVE_RESOURCE_FILE'
 	<returns>A value indicating if the write succeeded.</returns>
 ]]
 
+native 'GET_RESOURCE_STATE'
+	arguments {
+		charPtr 'resourceName'
+	}
+	apiset 'shared'
+	returns 'charPtr'
+	doc [[
+	<summary>
+	Returns the current state of the specified resource.
+	</summary>
+	<param name="resourceName">The name of the resource.</param>
+	<returns>The resource state. One of `"missing", "started", "starting", "stopped", "stopping", "uninitialized" or "unknown"`.</returns>
+]]
+
+native 'GET_RESOURCE_PATH'
+	arguments {
+		charPtr 'resourceName'
+	}
+	apiset 'server'
+	returns 'charPtr'
+	doc [[
+	<summary>
+	Returns the physical on-disk path of the specified resource.
+	</summary>
+	<param name="resourceName">The name of the resource.</param>
+	<returns>The resource directory name, possibly without trailing slash.</returns>
+]]
+
 native 'GET_CURRENT_RESOURCE_NAME'
 	arguments {}
 	apiset 'shared'
@@ -226,6 +599,14 @@ native 'SET_NUI_FOCUS'
 	arguments {
 		BOOL 'hasFocus',
 		BOOL 'hasCursor'
+	}
+	apiset 'client'
+	returns 'void'
+
+native 'GET_NUI_CURSOR_POSITION'
+	arguments {
+		intPtr 'x',
+		intPtr 'y'
 	}
 	apiset 'client'
 	returns 'void'
@@ -593,7 +974,7 @@ native 'IS_ACE_ALLOWED'
 	arguments {
 		charPtr 'object'
 	}
-	apiset 'server'
+	apiset 'shared'
 	returns 'BOOL'
 
 native 'IS_PLAYER_ACE_ALLOWED'
@@ -691,6 +1072,21 @@ native 'END_FIND_PICKUP'
 	}
 	apiset 'client'
 	returns 'void'
+
+native 'SET_VEHICLE_AUTO_REPAIR_DISABLED'
+	arguments{
+		Vehicle 'vehicle',
+		BOOL 'value'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+	<summary>
+	Disables the vehicle from being repaired when a vehicle extra is enabled.
+	</summary>
+	<param name="vehicle">The vehicle to set disable auto vehicle repair.</param>
+	<param name="value">Setting the value to  true prevents the vehicle from being repaired when a extra is enabled. Setting the value to false allows the vehicle from being repaired when a extra is enabled.</param>
+	]]
 
 native 'GET_VEHICLE_FUEL_LEVEL'
 	arguments {
@@ -793,12 +1189,12 @@ native 'GET_VEHICLE_HIGH_GEAR'
 		Vehicle 'vehicle'
 	}
 	apiset 'client'
-	returns 'float'
+	returns 'int'
 
 native 'SET_VEHICLE_HIGH_GEAR'
 	arguments {
 		Vehicle 'vehicle',
-		float 'gear'
+		int 'gear'
 	}
 	apiset 'client'
 	returns 'void'
@@ -823,6 +1219,14 @@ native 'GET_VEHICLE_STEERING_ANGLE'
 	}
 	apiset 'client'
 	returns 'float'
+
+native 'SET_VEHICLE_STEERING_ANGLE'
+	arguments {
+		Vehicle 'vehicle',
+		float 'angle'
+	}
+	apiset 'client'
+	returns 'void'
 
 native 'GET_VEHICLE_STEERING_SCALE'
 	arguments {
@@ -1273,3 +1677,248 @@ native 'SET_VEHICLE_HANDLING_VECTOR'
 	<param name="fieldName">The field name to set. These match the keys in `handling.meta`.</param>
 	<param name="value">The Vector3 value to set.</param>
 ]]
+
+native 'GET_VEHICLE_WHEEL_XROT'
+	arguments {
+		Vehicle 'vehicle',
+		int 'wheelIndex'
+	}
+	apiset 'client'
+	returns 'float'
+
+native 'SET_VEHICLE_WHEEL_XROT'
+	arguments {
+		Vehicle 'vehicle',
+		int 'wheelIndex',
+		float 'value'
+	}
+	apiset 'client'
+	returns 'void'
+
+native 'GET_VEHICLE_WHEEL_X_OFFSET'
+	arguments {
+		Vehicle 'vehicle',
+		int 'wheelIndex'
+	}
+	apiset 'client'
+	returns 'float'
+	doc [[
+	<summary>
+	Returns the offset of the specified wheel relative to the wheel's axle center.
+	</summary>
+]]
+
+native 'SET_VEHICLE_WHEEL_X_OFFSET'
+	arguments {
+		Vehicle 'vehicle',
+		int 'wheelIndex',
+		float 'offset'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+	<summary>
+	Adjusts the offset of the specified wheel relative to the wheel's axle center.
+	Needs to be called every frame in order to function properly, as GTA will reset the offset otherwise.
+
+	This function can be especially useful to set the track width of a vehicle, for example:
+	```
+	function SetVehicleFrontTrackWidth(vehicle, width)
+		SetVehicleWheelXOffset(vehicle, 0, -width/2)
+		SetVehicleWheelXOffset(vehicle, 1, width/2)
+	end
+	```
+	</summary>
+]]
+
+native 'SEND_LOADING_SCREEN_MESSAGE'
+	arguments {
+		charPtr 'jsonString'
+	}
+	apiset 'client'
+	returns 'BOOL'
+	doc [[
+	<summary>
+	Sends a message to the `loadingScreen` NUI frame, which contains the HTML page referenced in `loadscreen` resources.
+	</summary>
+	<param name="jsonString">The JSON-encoded message.</param>
+	<returns>A success value.</returns>
+]]
+
+native 'SET_MANUAL_SHUTDOWN_LOADING_SCREEN_NUI'
+	arguments {
+		BOOL 'manualShutdown'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+	<summary>
+	Sets whether or not `SHUTDOWN_LOADING_SCREEN` automatically shuts down the NUI frame for the loading screen. If this is enabled,
+	you will have to manually invoke `SHUTDOWN_LOADING_SCREEN_NUI` whenever you want to hide the NUI loading screen.
+	</summary>
+	<param name="manualShutdown">TRUE to manually shut down the loading screen NUI.</param>
+]]
+
+native 'SHUTDOWN_LOADING_SCREEN_NUI'
+	arguments {}
+	apiset 'client'
+	returns 'void'
+	doc [[
+	<summary>
+	Shuts down the `loadingScreen` NUI frame, similarly to `SHUTDOWN_LOADING_SCREEN`.
+	</summary>
+]]
+
+native 'ADD_MINIMAP_OVERLAY'
+	arguments {
+		charPtr 'name'
+	}
+	apiset 'client'
+	returns 'int'
+	doc [[
+	<summary>
+	Loads a minimap overlay from a GFx file in the current resource.
+	</summary>
+	<param name="name">The path to a `.gfx` file in the current resource. It has to be specified as a `file`.</param>
+	<returns>A minimap overlay ID.</returns>
+]]
+
+native 'HAS_MINIMAP_OVERLAY_LOADED'
+	arguments {
+		int 'id'
+	}
+	apiset 'client'
+	returns 'BOOL'
+	doc [[
+	<summary>
+	Returns whether or not the specific minimap overlay has loaded.
+	</summary>
+	<param name="id">A minimap overlay ID.</param>
+	<returns>A boolean indicating load status.</returns>
+]]
+
+native 'CALL_MINIMAP_SCALEFORM_FUNCTION'
+	arguments {
+		int 'miniMap',
+		charPtr 'fnName'
+	}
+	apiset 'client'
+	returns 'BOOL'
+	doc [[
+	<summary>
+	This is similar to the PushScaleformMovieFunction natives, except it calls in the `TIMELINE` of a minimap overlay.
+	</summary>
+	<param name="miniMap">The minimap overlay ID.</param>
+	<param name="fnName">A function in the overlay's TIMELINE.</param>
+]]
+
+native 'SET_MINIMAP_OVERLAY_DISPLAY'
+	arguments {
+		int 'miniMap',
+		float 'x',
+		float 'y',
+		float 'xScale',
+		float 'yScale',
+		float 'alpha'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+	<summary>
+	Sets the display info for a minimap overlay.
+	</summary>
+	<param name="miniMap">The minimap overlay ID.</param>
+	<param name="x">The X position for the overlay. This is equivalent to a game coordinate X.</param>
+	<param name="y">The Y position for the overlay. This is equivalent to a game coordinate Y, except that it's inverted (gfxY = -gameY).</param>
+	<param name="xScale">The X scale for the overlay. This is equivalent to the Flash _xscale property, therefore 100 = 100%.</param>
+	<param name="yScale">The Y scale for the overlay. This is equivalent to the Flash _yscale property.</param>
+	<param name="alpha">The alpha value for the overlay. This is equivalent to the Flash _alpha property, therefore 100 = 100%.</param>
+]]
+
+native 'GET_REGISTERED_COMMANDS'
+	arguments {
+	}
+	returns 'object'
+	doc [[
+	<summary>
+	Returns all commands that are registered in the command system.
+	The data returned adheres to the following layout:
+	```
+	[
+		{
+			"name": "cmdlist"
+		},
+		{
+			"name": "command1"
+		}
+	]
+	```
+	</summary>
+	<returns>An object containing registered commands.</returns>
+]]
+	apiset 'shared'
+
+native 'SET_RICH_PRESENCE'
+	arguments {
+		charPtr 'presenceState'
+	}
+	returns 'void'
+	apiset 'client'
+	doc [[
+	<summary>
+	Sets the player's rich presence detail state for social platform providers to a specified string.
+	</summary>
+	<param name="presenceState">The rich presence string to set.</param>
+]]
+
+native 'REGISTER_RESOURCE_BUILD_TASK_FACTORY'
+	arguments {
+		charPtr 'factoryId',
+		func 'factoryFn'
+	}
+	returns 'void'
+	apiset 'server'
+	doc [[
+	<summary>
+	Registers a build task factory for resources.
+	The function should return an object (msgpack map) with the following fields:
+	```
+	{
+		// returns whether the specific resource should be built
+		shouldBuild = func(resourceName: string): bool,
+		
+		// asynchronously start building the specific resource.
+		// call cb when completed
+		build = func(resourceName: string, cb: func(success: bool, status: string): void): void
+	}
+	```
+	</summary>
+	<param name="factoryId">The identifier for the build task.</param>
+	<param name="factoryFn">The factory function.</param>
+]]
+
+native 'GET_PLAYER_PED'
+	arguments {
+		charPtr 'playerSrc'
+	}
+	apiset 'server'
+	returns 'Entity'
+
+native 'GET_ENTITY_COORDS'
+	arguments {
+		Entity 'entity'
+	}
+	apiset 'server'
+	returns 'Vector3'
+
+native "GET_HASH_KEY"
+	arguments {
+		charPtr "model",
+	}
+	apiset 'server'
+	returns	"Hash"
+	doc [[!
+<summary>
+		This native converts the passed string to a hash.
+</summary>
+	]]

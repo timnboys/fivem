@@ -23,7 +23,7 @@ param (
     $Identity = "C:\guava_deploy.ppk"
 )
 
-$CefName = "cef_binary_3.3071.1610.g5a5b538_windows64_minimal"
+$CefName = "cef_binary_3.3359.1760.gead4c40_windows64_minimal"
 
 # from http://stackoverflow.com/questions/2124753/how-i-can-use-powershell-with-the-visual-studio-command-prompt
 function Invoke-BatchFile
@@ -156,7 +156,7 @@ if (!$DontBuild)
 
     #cmd /c mklink /d citizenmp cfx-client
 
-    $VCDir = (Get-ItemProperty HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\SxS\VS7)."15.0"
+    $VCDir = (& "$WorkDir\code\tools\ci\vswhere.exe" -latest -prerelease -property installationPath -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64)
 
     if (!(Test-Path Env:\DevEnvDir)) {
         Invoke-BatchFile "$VCDir\VC\Auxiliary\Build\vcvars64.bat"
@@ -262,7 +262,7 @@ if (!$DontBuild)
         throw "Failed to build the code."
     }
 
-    if (($env:COMPUTERNAME -eq "BUILDVM") -and (!$IsServer)) {
+    if ((($env:COMPUTERNAME -eq "BUILDVM") -or ($env:COMPUTERNAME -eq "AVALON")) -and (!$IsServer)) {
         Start-Process -NoNewWindow powershell -ArgumentList "-ExecutionPolicy unrestricted .\tools\ci\dump_symbols.ps1 -BinRoot $BinRoot"
     }
 }
@@ -281,6 +281,8 @@ if (!$DontBuild -and $IsServer) {
     Copy-Item -Force $BinRoot\server\windows\release\*.dll $WorkDir\out\server\
 
     Copy-Item -Force -Recurse $WorkDir\data\shared\* $WorkDir\out\server\
+    Copy-Item -Force -Recurse $WorkDir\data\client\v8* $WorkDir\out\server\
+    Copy-Item -Force -Recurse $WorkDir\data\client\bin\icu* $WorkDir\out\server\
     Copy-Item -Force -Recurse $WorkDir\data\server\* $WorkDir\out\server\
     Copy-Item -Force -Recurse $WorkDir\data\server_windows\* $WorkDir\out\server\
 
@@ -302,14 +304,6 @@ if (!$DontBuild -and !$IsServer) {
     # create cache folders
 
     # copy output files
-    Copy-Item -Force $BinRoot\five\release\*.dll $WorkDir\caches\fivereborn\
-    Copy-Item -Force $BinRoot\five\release\*.com $WorkDir\caches\fivereborn\
-
-    Copy-Item -Force -Recurse $WorkDir\data\shared\* $WorkDir\caches\fivereborn\
-    Copy-Item -Force -Recurse $WorkDir\data\client\* $WorkDir\caches\fivereborn\
-
-    Copy-Item -Force -Recurse $BinRoot\five\release\citizen\* $WorkDir\caches\fivereborn\citizen\
-
     Push-Location $WorkDir\ext\ui-build
     .\build.cmd
 
@@ -331,6 +325,27 @@ if (!$DontBuild -and !$IsServer) {
 
     # remove CEF as redownloading is broken and this slows down gitlab ci cache
     Remove-Item -Recurse $WorkDir\vendor\cef\*
+
+    Copy-Item -Force -Recurse $WorkDir\data\shared\* $WorkDir\caches\fivereborn\
+    Copy-Item -Force -Recurse $WorkDir\data\client\* $WorkDir\caches\fivereborn\
+
+    Copy-Item -Force $BinRoot\five\release\*.dll $WorkDir\caches\fivereborn\
+    Copy-Item -Force $BinRoot\five\release\*.com $WorkDir\caches\fivereborn\
+
+    Copy-Item -Force -Recurse $BinRoot\five\release\citizen\* $WorkDir\caches\fivereborn\citizen\
+    
+    if (Test-Path $WorkDir\caches\fivereborn\adhesive.dll) {
+        Remove-Item -Force $WorkDir\caches\fivereborn\adhesive.dll
+    }
+
+    # build compliance stuff
+    if ($env:COMPUTERNAME -eq "AVALON") {
+        Copy-Item -Force $WorkDir\..\fivem-private\components\adhesive\adhesive.vmp.dll $WorkDir\caches\fivereborn\adhesive.dll
+
+        Push-Location C:\f\bci\
+        .\BuildComplianceInfo.exe $WorkDir\caches\fivereborn\ C:\f\bci-list.txt
+        Pop-Location
+    }
 
     # build meta/xz variants
     "<Caches>
@@ -380,7 +395,7 @@ if (!$DontUpload) {
 
     $Branch = $UploadBranch
 
-    $env:Path += ";C:\msys64\usr\bin"
+    $env:Path = "C:\msys64\usr\bin;$env:Path"
 
     New-Item -ItemType Directory -Force $WorkDir\upload\$Branch\bootstrap | Out-Null
     New-Item -ItemType Directory -Force $WorkDir\upload\$Branch\content | Out-Null
@@ -395,6 +410,8 @@ if (!$DontUpload) {
 
     rsync -r -a -v -e "$env:RSH_COMMAND" $BaseRoot/upload/ $env:SSH_TARGET
     Invoke-WebHook "Built and uploaded a new $env:CI_PROJECT_NAME version ($GameVersion) to $UploadBranch! Go and test it!"
+
+	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
     # clear cloudflare cache
     $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"

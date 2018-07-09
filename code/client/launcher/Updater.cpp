@@ -158,7 +158,7 @@ bool Updater_RunUpdate(int numCaches, ...)
 
 	if (result != 0)
 	{
-		MessageBox(NULL, va(L"An error (%i) occurred while checking the game version. Check if " CONTENT_URL_WIDE L" is available in your web browser.", result), L"O\x448\x438\x431\x43A\x430", MB_OK | MB_ICONSTOP);
+		MessageBox(NULL, va(L"An error (%i, %s) occurred while checking the game version. Check if " CONTENT_URL_WIDE L" is available in your web browser.", result, ToWide(DL_RequestURLError())), L"O\x448\x438\x431\x43A\x430", MB_OK | MB_ICONSTOP);
 		return false;
 	}
 
@@ -255,7 +255,10 @@ bool Updater_RunUpdate(int numCaches, ...)
 		manifestFile_t& file = filePair.second;
 
 		// check file hash first
-		bool fileOutdated = CheckFileOutdatedWithUI(MakeRelativeCitPath(converter.from_bytes(file.name)).c_str(), file.hash);
+		std::array<uint8_t, 20> hashEntry;
+		memcpy(hashEntry.data(), file.hash, hashEntry.size());
+
+		bool fileOutdated = CheckFileOutdatedWithUI(MakeRelativeCitPath(converter.from_bytes(file.name)).c_str(), { hashEntry });
 
 		if (fileOutdated)
 		{
@@ -303,7 +306,7 @@ bool Updater_RunUpdate(int numCaches, ...)
 	return retval;
 }
 
-bool CheckFileOutdatedWithUI(const wchar_t* fileName, const uint8_t hash[20])
+bool CheckFileOutdatedWithUI(const wchar_t* fileName, const std::vector<std::array<uint8_t, 20>>& validHashes, std::array<uint8_t, 20>* foundHash)
 {
 	bool fileOutdated = true;
 
@@ -407,9 +410,17 @@ bool CheckFileOutdatedWithUI(const wchar_t* fileName, const uint8_t hash[20])
 		uint8_t outHash[20];
 		SHA1Result(&ctx, outHash);
 
-		if (!memcmp(hash, outHash, 20))
+		if (foundHash)
 		{
-			fileOutdated = false;
+			memcpy(foundHash->data(), outHash, foundHash->size());
+		}
+
+		for (auto& hash : validHashes)
+		{
+			if (memcmp(hash.data(), outHash, 20) == 0)
+			{
+				fileOutdated = false;
+			}
 		}
 	}
 

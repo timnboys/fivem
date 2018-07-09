@@ -3,12 +3,17 @@ import {Injectable} from '@angular/core';
 import {GameService, Profile} from './game.service';
 import {Server} from './servers/server'
 
-import {Angulartics2, Angulartics2Piwik} from 'angulartics2';
+import {Angulartics2} from 'angulartics2';
+import {Angulartics2Piwik} from 'angulartics2/piwik';
 
 @Injectable()
 export class TrackingService {
 	constructor(private gameService: GameService, private angulartics: Angulartics2, private piwik: Angulartics2Piwik) {
 		this.gameService.connecting.subscribe((event: Server) => {
+			if (!event) {
+				return;
+			}
+
 			this.angulartics.eventTrack.next({
 				action: 'Connecting',
 				properties: {
@@ -27,6 +32,10 @@ export class TrackingService {
 		});
 
 		this.gameService.connectFailed.subscribe(([server, message]) => {
+			if (!server) {
+				return;
+			}
+
 			this.angulartics.eventTrack.next({
 				action: 'ConnectFail',
 				properties: {
@@ -45,6 +54,10 @@ export class TrackingService {
 		});
 
 		this.gameService.signinChange.subscribe((profile: Profile) => {
+			if (profile.externalIdentifier.startsWith('dummy:')) {
+				return;
+			}
+			
 			this.angulartics.setUsername.next(profile.externalIdentifier);
 		});
 	}

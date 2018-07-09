@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "sysAllocator.h"
 
@@ -124,6 +124,8 @@ public:
 
 	virtual bool IsCollection() = 0;
 
+	virtual bool m_addedIn1290() = 0;
+
 	virtual fiDevice* GetCollection() = 0; // return this
 
 	virtual bool m_ax() = 0;
@@ -237,6 +239,8 @@ public:
 
 	virtual bool IsCollection();
 
+	virtual bool m_addedIn1290();
+
 	virtual fiDevice* GetCollection(); // return this
 
 	virtual bool m_ax();
@@ -292,7 +296,7 @@ public:
 	fiPackfile();
 
 	// any RAGE path can be used; including root-relative paths
-	void OpenPackfile(const char* archive, bool bTrue, int type, intptr_t veryFalse);
+	bool OpenPackfile(const char* archive, bool bTrue, int type, intptr_t veryFalse);
 
 	// compatibility wrappers
 	inline void OpenPackfile(const char* archive, bool bTrue, bool bFalse, int type, intptr_t veryFalse)

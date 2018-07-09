@@ -17,6 +17,9 @@
 
 #include <Error.h>
 
+fwEvent<const std::string&> OnRichPresenceSetTemplate;
+fwEvent<int, const std::string&> OnRichPresenceSetValue;
+
 std::unique_ptr<NetLibraryImplBase> CreateNetLibraryImplV2(INetLibraryInherit* base);
 
 inline ISteamComponent* GetSteam()
@@ -44,18 +47,25 @@ uint16_t NetLibrary::GetServerNetID()
 	return m_serverNetID;
 }
 
+uint16_t NetLibrary::GetServerSlotID()
+{
+	return m_serverSlotID;
+}
+
 uint16_t NetLibrary::GetHostNetID()
 {
 	return m_hostNetID;
 }
 
-void NetLibrary::HandleConnected(int serverNetID, int hostNetID, int hostBase)
+void NetLibrary::HandleConnected(int serverNetID, int hostNetID, int hostBase, int slotID, uint64_t serverTime)
 {
 	m_serverNetID = serverNetID;
 	m_hostNetID = hostNetID;
 	m_hostBase = hostBase;
+	m_serverSlotID = slotID;
+	m_serverTime = serverTime;
 
-	trace("connectOK, our id %d, host id %d\n", m_serverNetID, m_hostNetID);
+	trace("connectOK, our id %d (slot %d), host id %d\n", m_serverNetID, m_serverSlotID, m_hostNetID);
 
 	OnConnectOKReceived(m_currentServer);
 
@@ -242,21 +252,46 @@ void NetLibrary::ProcessOOB(const NetAddress& from, const char* oob, size_t leng
 			{
 				auto steam = GetSteam();
 
-				if (steam)
+				char hostname[256] = { 0 };
+				strncpy(hostname, Info_ValueForKey(infoString, "hostname"), 255);
+
+				char cleaned[256];
+
+				StripColors(hostname, cleaned, 256);
+
+#ifdef GTA_FIVE
+				SetWindowText(FindWindow(L"grcWindow", nullptr), va(L"FiveM - %s", ToWide(cleaned)));
+#endif
+
+				auto richPresenceSetTemplate = [&](const auto& tpl)
 				{
-					char hostname[256] = { 0 };
-					strncpy(hostname, Info_ValueForKey(infoString, "hostname"), 255);
+					OnRichPresenceSetTemplate(tpl);
 
-					char cleaned[256];
+					if (steam)
+					{
+						steam->SetRichPresenceTemplate(tpl);
+					}
+				};
 
-					StripColors(hostname, cleaned, 256);
+				auto richPresenceSetValue = [&](int idx, const std::string& val)
+				{
+					OnRichPresenceSetValue(idx, val);
 
-					steam->SetRichPresenceTemplate("{0}\n\n{2} on {3} with {1}");
-					steam->SetRichPresenceValue(0, std::string(cleaned).substr(0, 64) + "...");
-					steam->SetRichPresenceValue(1, "Connecting...");
-					steam->SetRichPresenceValue(2, Info_ValueForKey(infoString, "gametype"));
-					steam->SetRichPresenceValue(3, Info_ValueForKey(infoString, "mapname"));
-				}
+					if (steam)
+					{
+						steam->SetRichPresenceValue(idx, val);
+					}
+				};
+
+				richPresenceSetTemplate("{0}\n{1}");
+
+				richPresenceSetValue(0, fmt::sprintf(
+					"%s%s",
+					std::string(cleaned).substr(0, 110),
+					(strlen(cleaned) > 110) ? "..." : ""
+				));
+
+				richPresenceSetValue(1, "Connecting...");
 			}
 
 			// until map reloading is in existence
@@ -585,6 +620,9 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 
 	postMap["guid"] = va("%lld", GetGUID());
 
+	static bool isLegacyDeferral;
+	isLegacyDeferral = false;
+
 	static fwAction<bool, const char*, size_t> handleAuthResult;
 	handleAuthResult = [=] (bool result, const char* connDataStr, size_t size) mutable
 	{
@@ -592,8 +630,6 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 		{
 			return;
 		}
-
-		OnConnectionProgress("Handshaking...", 0, 100);
 
 		std::string connData(connDataStr, size);
 
@@ -607,6 +643,23 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 
 			return;
 		}
+		else if (!isLegacyDeferral)
+		{
+			OnConnectionError(va("Failed handshake to server %s:%d - it closed the connection while deferring.", m_currentServer.GetAddress(), m_currentServer.GetPort()));
+		}
+	};
+
+	static std::function<bool(const std::string&)> handleAuthResultData;
+	handleAuthResultData = [=](const std::string& chunk)
+	{
+		// FIXME: for now, assume the chunk will always be a full JSON message
+		// this will not always be the case, but for initial prototyping this'll work...
+		if (m_connectionState != CS_INITING)
+		{
+			return false;
+		}
+
+		std::string connData(chunk);
 
 		try
 		{
@@ -620,6 +673,16 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 
 			if (node["defer"].IsDefined())
 			{
+				if (node["deferVersion"].IsDefined())
+				{
+					// new deferral system
+					OnConnectionProgress(node["message"].as<std::string>(), 133, 133);
+
+					return true;
+				}
+
+				isLegacyDeferral = true;
+
 				OnConnectionProgress(node["status"].as<std::string>(), 133, 133);
 
 				static fwMap<fwString, fwString> newMap;
@@ -627,28 +690,27 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 				newMap["guid"] = va("%lld", GetGUID());
 				newMap["token"] = m_token;
 
-				m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), newMap, handleAuthResult);
+				HttpRequestOptions options;
+				options.streamingCallback = handleAuthResultData;
+				m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), m_httpClient->BuildPostString(newMap), options, handleAuthResult);
 
-				return;
+				return true;
 			}
 
 			if (node["error"].IsDefined())
 			{
-				// FIXME: single quotes
-				//nui::ExecuteRootScript(va("citFrames[\"mpMenu\"].contentWindow.postMessage({ type: 'connectFailed', message: '%s' }, '*');", node["error"].as<std::string>().c_str()));
 				OnConnectionError(node["error"].as<std::string>().c_str());
 
 				m_connectionState = CS_IDLE;
 
-				return;
+				return true;
 			}
 
 			if (!node["sH"].IsDefined())
 			{
-				// Server did not send a scripts setting: old server or rival project
-				OnConnectionError("Legacy servers are incompatible with this version of FiveM. Update the server to the latest files from fivem.net");
+				OnConnectionError("Invalid server response from initConnect (missing JSON data), is this server running a broken resource?");
 				m_connectionState = CS_IDLE;
-				return;
+				return true;
 			}
 			else
 			{
@@ -667,6 +729,7 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 			});
 
 			Instance<ICoreGameInit>::Get()->EnhancedHostSupport = (node["enhancedHostSupport"].IsDefined() && node["enhancedHostSupport"].as<bool>(false));
+			Instance<ICoreGameInit>::Get()->OneSyncEnabled = (node["onesync"].IsDefined() && node["onesync"].as<bool>(false));
 
 			m_serverProtocol = node["protocol"].as<uint32_t>();
 
@@ -677,7 +740,27 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 				steam->SetConnectValue(fmt::sprintf("+connect %s:%d", m_currentServer.GetAddress(), m_currentServer.GetPort()));
 			}
 
-			m_connectionState = CS_INITRECEIVED;
+			if (Instance<ICoreGameInit>::Get()->OneSyncEnabled)
+			{
+				m_httpClient->DoGetRequest(fmt::sprintf("https://runtime.fivem.net/policy/onesync?server=%s_%d", address.GetHost(), address.GetPort()), [=](bool success, const char* data, size_t length)
+				{
+					if (success)
+					{
+						if (std::string(data, length).find("yes") != std::string::npos)
+						{
+							m_connectionState = CS_INITRECEIVED;
+							return;
+						}
+					}
+
+					OnConnectionError("OneSync is not whitelisted for this server, or requesting whitelist status failed. You'll have to wait a little while longer!");
+					m_connectionState = CS_IDLE;
+				});
+			}
+			else
+			{
+				m_connectionState = CS_INITRECEIVED;
+			}
 
 			if (node["netlibVersion"].as<int>(1) == 2)
 			{
@@ -687,7 +770,7 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 			{
 				OnConnectionError("Legacy servers are incompatible with this version of FiveM. Please tell the server owner to the server to the latest FXServer build. See https://fivem.net/ for more info.");
 				m_connectionState = CS_IDLE;
-				return;
+				return true;
 			}
 		}
 		catch (YAML::Exception& e)
@@ -695,11 +778,16 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 			OnConnectionError(e.what());
 			m_connectionState = CS_IDLE;
 		}
+
+		return true;
 	};
 
 	performRequest = [=]()
 	{
-		m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), postMap, handleAuthResult);
+		HttpRequestOptions options;
+		options.streamingCallback = handleAuthResultData;
+
+		m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), m_httpClient->BuildPostString(postMap), options, handleAuthResult);
 	};
 
 	m_httpClient->DoGetRequest(fmt::sprintf("https://runtime.fivem.net/blacklist/%s_%d", address.GetHost(), address.GetPort()), [=](bool success, const char* data, size_t length)
@@ -792,7 +880,15 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 		{
 			auto node = YAML::Load(std::string(data, dataLen));
 
-			if (node["ticket"].IsDefined())
+			if (node["error"].IsDefined())
+			{
+				OnConnectionError(va("%s", node["error"].as<std::string>()));
+
+				m_connectionState = CS_IDLE;
+
+				return;
+			}
+			else if (node["ticket"].IsDefined())
 			{
 				postMap["cfxTicket"] = node["ticket"].as<std::string>();
 			}

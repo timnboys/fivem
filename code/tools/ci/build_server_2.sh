@@ -11,10 +11,19 @@ apk --no-cache update
 apk --no-cache upgrade
 
 # install runtime dependencies
-apk add libc++ curl libssl1.0 libunwind libstdc++ zlib
+apk add --no-cache libc++ curl libssl1.0 libunwind libstdc++ zlib c-ares icu-libs
+
+# add fivem repositories
+curl -sLo /etc/apk/keys/peachypies@protonmail.ch-5adb3818.rsa.pub https://runtime.fivem.net/client/alpine/peachypies@protonmail.ch-5adb3818.rsa.pub
+
+echo https://runtime.fivem.net/client/alpine/builds >> /etc/apk/repositories
+apk --no-cache update
+
+# install fivem v8
+apk add v8
 
 # install compile-time dependencies
-apk add --no-cache --virtual .dev-deps libc++-dev curl-dev clang clang-dev build-base linux-headers openssl-dev python2 py2-pip lua5.3 lua5.3-dev mono-dev
+apk add --no-cache --virtual .dev-deps libc++-dev curl-dev clang clang-dev build-base linux-headers openssl-dev python2 py2-pip lua5.3 lua5.3-dev mono-dev c-ares-dev v8-dev
 
 # install ply
 pip install ply
@@ -50,8 +59,12 @@ cd /src/ext/natives
 gcc -O2 -shared -fpic -o cfx.so -I/usr/include/lua5.3/ lua_cfx.c
 
 mkdir -p /opt/cfx-server/citizen/scripting/lua/
+mkdir -p /opt/cfx-server/citizen/scripting/v8/
 
-lua5.3 codegen.lua > /opt/cfx-server/citizen/scripting/lua/natives_server.lua
+lua5.3 codegen.lua natives_stash/gta_universal.lua lua server > /opt/cfx-server/citizen/scripting/lua/natives_server.lua
+lua5.3 codegen.lua natives_stash/gta_universal.lua js server > /opt/cfx-server/citizen/scripting/v8/natives_server.js
+lua5.3 codegen.lua natives_stash/gta_universal.lua dts server > /opt/cfx-server/citizen/scripting/v8/natives_server.d.ts
+
 
 cat > /src/code/client/clrcore/NativesServer.cs << EOF
 #if IS_FXSERVER
@@ -59,13 +72,15 @@ namespace CitizenFX.Core.Native
 {
 EOF
 
-lua5.3 codegen.lua natives_stash/blank.lua enum server >> /src/code/client/clrcore/NativesServer.cs
-lua5.3 codegen.lua natives_stash/blank.lua cs server >> /src/code/client/clrcore/NativesServer.cs
+lua5.3 codegen.lua natives_stash/gta_universal.lua enum server >> /src/code/client/clrcore/NativesServer.cs
+lua5.3 codegen.lua natives_stash/gta_universal.lua cs server >> /src/code/client/clrcore/NativesServer.cs
 
 cat >> /src/code/client/clrcore/NativesServer.cs << EOF
 }
 #endif
 EOF
+
+lua5.3 codegen.lua natives_stash/gta_universal.lua rpc server > /opt/cfx-server/citizen/scripting/rpc_natives.json
 
 # build CitizenFX
 cd /src/code
@@ -122,5 +137,8 @@ cd /opt/cfx-server
 rm -rf /tmp/boost
 
 apk del .dev-deps
+
+apk del curl
+apk add --no-cache curl=7.59.0-r1 libcurl=7.59.0-r1
 
 mv /tmp/libMonoPosixHelper.so /usr/lib/libMonoPosixHelper.so

@@ -18,17 +18,20 @@ if _OPTIONS['game'] == 'server' then
 	if os.is('windows') then
 		component 'citizen-ssh-server'
 	end
+	component 'citizen-scripting-v8'
 	component 'citizen-scripting-mono'
 	component 'citizen-server-instance'
 	component 'citizen-server-impl'
 	component 'conhost-server'
 	component 'scripting-server'
 	component 'vfs-impl-server'
+	component 'voip-server-mumble'
 else
 	component 'tool-formats'
 	component 'tool-vehrec'
 	component 'rage-formats-x'
 	component 'conhost-v2'
+	component 'voip-mumble'
 
 	component 'citizen-legacy-net-resources'
 	component 'citizen-resources-client'
@@ -74,3 +77,4 @@ component 'loading-screens-five'
 component 'devtools-five'
 component 'devcon'
 component 'extra-natives-five'
+component 'discord'

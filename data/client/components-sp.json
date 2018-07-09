@@ -23,10 +23,12 @@
 	"gta:mission-cleanup:five",
 	"devtools:five",
 	"gta:game:five",
-	"extra-natives:five",
 	"net:http-server",
 	"net:tcp-server",
 	"scripting:gta",
 	"handling-loader:five",
-	"scripthookv"
+	"scripthookv",
+	"citizen:resources:core",
+	"scrbind:base",
+	"citizen:scripting:core"
 ]

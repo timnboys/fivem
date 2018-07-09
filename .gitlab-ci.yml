@@ -1,7 +1,7 @@
 .buildscript: &build_windows
   stage: build
   script:
-    - "powershell -ExecutionPolicy Unrestricted code\\tools\\ci\\build.ps1 -DontUpload $true"
+    - ".\\code\\tools\\ci\\build.ps1 -DontUpload $true"
 
 build_client:
   <<: *build_windows
@@ -40,6 +40,8 @@ build_server_windows:
       - out/server.zip
   except:
     - tags
+    #- master
+    - feature/update-to-1290
   cache:
     key: server
     untracked: true
@@ -58,6 +60,9 @@ build_proot_linux:
       - fx.tar.xz
   except:
     - tags
+    - master
+    - feature/update-to-1290
+    - feature/cloning-stuff-releng
   tags:
     - linux
 
@@ -66,7 +71,7 @@ deploy_specific:
   dependencies:
     - build_client
   script:
-    - "powershell -ExecutionPolicy Unrestricted code\\tools\\ci\\build.ps1 -DontBuild $true"
+    - ".\\code\\tools\\ci\\build.ps1 -DontBuild $true"
   environment:
     name: specific/$CI_BUILD_REF_NAME
   only:
@@ -84,7 +89,7 @@ deploy_canary:
   dependencies:
     - build_client
   script:
-    - "powershell -ExecutionPolicy Unrestricted code\\tools\\ci\\build.ps1 -DontBuild $true"
+    - ".\\code\\tools\\ci\\build.ps1 -DontBuild $true"
   environment:
     name: canary
   tags:
@@ -98,7 +103,7 @@ deploy_prod:
   dependencies:
     - build_client
   script:
-    - "powershell -ExecutionPolicy Unrestricted code\\tools\\ci\\build.ps1 -DontBuild $true"
+    - ".\\code\\tools\\ci\\build.ps1 -DontBuild $true"
   environment:
     name: production
   when: manual

@@ -29,9 +29,13 @@ a {
 
 			.checkboxes {
 				.checkbox {
-					label {
+					label, button {
 						height: $filterHeight;
 						padding: $padding*2 $padding*$multiplier;
+					}
+
+					button {
+						width: $filterHeight;
 					}
 				}
 			}
@@ -40,6 +44,7 @@ a {
 
 	.filter {
 		margin-bottom: $padding;
+		position: relative;
 
 		&.attract-next {
 			margin-bottom: $padding/4;
@@ -61,6 +66,46 @@ a {
 			}
 		}
 
+		.search-dropdown {
+			position: absolute;
+			top: $filterHeight;
+			left: 0;
+			right: 0;
+
+			z-index: 100;
+			overflow: hidden;
+
+			background-color: rgba($bgColour, .8);
+			@include backdropBlur;
+
+			ul {
+				list-style: none;
+
+				li {
+					position: relative;
+					padding: 0.5vh 0.3vw 0.5vh 0.5vw;
+
+					h4 {
+						font-size: 0.9em;
+
+						span {
+							font-weight: normal;
+						}
+					}
+
+					h4 + span {
+						font-size: 0.7em;
+
+						color: desaturate(darken($fgColour, 10%), 20%);
+					}
+
+					&:hover, &.active {
+						background-color: rgba(lighten($bgColour, 15%), 1);
+					}
+				}
+			}
+		}
+
 		.checkboxes {
 			display: flex;
 			width: 100%;
@@ -73,6 +118,10 @@ a {
 
 				margin-right: $padding/4;
 
+				&.button {
+					flex-grow: 0;
+				}
+
 				&:last-child {
 					margin-right: 0;
 				}
@@ -84,7 +133,7 @@ a {
 					transform: translateX(-9999px);
 				}
 
-				label {
+				label, button {
 					display: block;
 					width: 100%;
 
@@ -97,6 +146,12 @@ a {
 
 					transition: all .2s ease;
 
+					span {
+						display: inline-block;
+					}
+				}
+
+				label {
 					&::before {
 						content: '';
 						display: inline-block;
@@ -115,11 +170,15 @@ a {
 						text-align: center;
 
 						background-color: rgba($bgColour, .5);
+						color: white;
+						transition: all .2s ease;
 					}
 				}
 
-				&:hover label {
+				&:hover label, &:hover button {
 					background-color: rgba($bgColour, .2);
+
+					box-shadow: none;
 				}
 
 				input:checked + label {
@@ -128,6 +187,50 @@ a {
 						background: $greenyColour;
 						box-shadow: 0 0 25px darken($greenyColour, 10%);
 						text-shadow: 0 0 2px rgba($bgColour, .5);
+					}
+				}
+			}
+			
+			.max-ping {
+				label {
+					padding-top: 1.8vh !important;
+				}
+				
+				#progress {
+					opacity: 0;
+					transition: all .2s ease;
+					height: 0vh; 
+					width: 100%; 
+					top: 0px; 
+					position: absolute; 
+					background-color: rgba($bgColour, .5);
+					
+					font-size: 0.5vh;
+					line-height: 1.5;
+					text-align: center;
+
+					.bar {
+						position: absolute; 
+						width: 0px;
+						height: 0vh;
+						top: 0px; 
+						background-color: rgba($greenyColour, .5)
+					}
+				}
+				
+				&.enabled {
+					label {
+						padding-top: 2.8vh !important;
+					}
+					
+					#progress {
+						font-size: 1.5vh;
+						height: 2vh;
+						opacity: 1;	
+
+						.bar {
+							height: 2vh;
+						}
 					}
 				}
 			}
@@ -221,4 +324,13 @@ a {
 			}
 		}
 	}
+}
+
+@keyframes spin {
+    from {transform:rotate(0deg);}
+    to {transform:rotate(360deg);}
+}
+
+.refreshing {
+	animation: spin 1000ms infinite linear;
 }

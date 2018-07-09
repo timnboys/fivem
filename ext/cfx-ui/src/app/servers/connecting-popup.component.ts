@@ -14,13 +14,14 @@ export class ConnectingPopupComponent extends Translation implements OnInit {
 	overlayTitle: string;
 	overlayMessage: string;
 	overlayMessageData = {};
+	overlayBg = '';
 	closeLabel = "#Servers_CloseOverlay";
 
 	constructor(
 		private gameService: GameService,
 		public translation: TranslationService
 	) {
-		super(translation);
+		super();
 	}
 
 	ngOnInit() {
@@ -30,6 +31,8 @@ export class ConnectingPopupComponent extends Translation implements OnInit {
 			this.overlayMessageData = {serverName: a.address};
 			this.showOverlay = true;
 			this.overlayClosable = false;
+
+			this.overlayBg = (a.data.vars && a.data.vars.banner_connecting) ? a.data.vars.banner_connecting : '';
 		});
 
 		this.gameService.connectFailed.subscribe(([server, message]) => {
@@ -64,8 +67,10 @@ export class ConnectingPopupComponent extends Translation implements OnInit {
 	}
 
 	closeOverlay() {
-		this.showOverlay = false;
+		if (this.overlayClosable) {
+			this.showOverlay = false;
 
-		this.gameService.cancelNativeConnect();
+			this.gameService.cancelNativeConnect();
+		}
 	}
 }

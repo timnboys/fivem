@@ -20,6 +20,11 @@
 #include "KnownFolders.h"
 #include <ShlObj.h>
 
+#include <CfxState.h>
+#include <HostSharedData.h>
+
+#include <network/uri.hpp>
+
 #include <se/Security.h>
 
 #include <rapidjson/document.h>
@@ -279,4 +284,161 @@ static InitFunction initFunction([] ()
 
 		nui::CreateFrame("mpMenu", "nui://game/ui/app/index.html");
 	});
+});
+
+#include <gameSkeleton.h>
+#include <shellapi.h>
+
+#include <nng.h>
+#include <protocol/pipeline0/pull.h>
+#include <protocol/pipeline0/push.h>
+
+static void ProtocolRegister()
+{
+	LSTATUS result;
+
+#define CHECK_STATUS(x) \
+	result = (x); \
+	if (result != ERROR_SUCCESS) { \
+		trace("[Protocol Registration] " #x " failed: %x", result); \
+		return; \
+	}
+
+	HKEY key;
+	wchar_t path[MAX_PATH];
+	wchar_t command[1024];
+
+	GetModuleFileNameW(NULL, path, sizeof(path));
+	swprintf_s(command, L"\"%s\" \"%%1\"", path);
+
+	CHECK_STATUS(RegCreateKeyW(HKEY_CURRENT_USER, L"SOFTWARE\\Classes\\fivem", &key));
+	CHECK_STATUS(RegSetValueExW(key, NULL, 0, REG_SZ, (BYTE*)L"FiveM", 6 * 2));
+	CHECK_STATUS(RegSetValueExW(key, L"URL Protocol", 0, REG_SZ, (BYTE*)L"", 1 * 2));
+	CHECK_STATUS(RegCloseKey(key));
+
+	CHECK_STATUS(RegCreateKey(HKEY_CURRENT_USER, L"SOFTWARE\\Classes\\FiveM.ProtocolHandler", &key));
+	CHECK_STATUS(RegSetValueExW(key, NULL, 0, REG_SZ, (BYTE*)L"FiveM", 6 * 2));
+	CHECK_STATUS(RegCloseKey(key));
+
+	CHECK_STATUS(RegCreateKey(HKEY_CURRENT_USER, L"SOFTWARE\\FiveM", &key));
+	CHECK_STATUS(RegCloseKey(key));
+
+	CHECK_STATUS(RegCreateKey(HKEY_CURRENT_USER, L"SOFTWARE\\FiveM\\Capabilities", &key));
+	CHECK_STATUS(RegSetValueExW(key, L"ApplicationName", 0, REG_SZ, (BYTE*)L"FiveM", 6 * 2));
+	CHECK_STATUS(RegSetValueExW(key, L"ApplicationDescription", 0, REG_SZ, (BYTE*)L"FiveM", 6 * 2));
+	CHECK_STATUS(RegCloseKey(key));
+
+	CHECK_STATUS(RegCreateKey(HKEY_CURRENT_USER, L"SOFTWARE\\FiveM\\Capabilities\\URLAssociations", &key));
+	CHECK_STATUS(RegSetValueExW(key, L"fivem", 0, REG_SZ, (BYTE*)L"FiveM.ProtocolHandler", 22 * 2));
+	CHECK_STATUS(RegCloseKey(key));
+
+	CHECK_STATUS(RegCreateKey(HKEY_CURRENT_USER, L"SOFTWARE\\RegisteredApplications", &key));
+	CHECK_STATUS(RegSetValueExW(key, L"FiveM", 0, REG_SZ, (BYTE*)L"Software\\FiveM\\Capabilities", 28 * 2));
+	CHECK_STATUS(RegCloseKey(key));
+
+	CHECK_STATUS(RegCreateKey(HKEY_CURRENT_USER, L"SOFTWARE\\Classes\\FiveM.ProtocolHandler\\shell\\open\\command", &key));
+	CHECK_STATUS(RegSetValueExW(key, NULL, 0, REG_SZ, (BYTE*)command, (wcslen(command) * sizeof(wchar_t)) + 2));
+	CHECK_STATUS(RegCloseKey(key));
+}
+
+void Component_RunPreInit()
+{
+	int argc;
+	LPWSTR* argv = CommandLineToArgvW(GetCommandLine(), &argc);
+
+	static std::string connectHost;
+
+	for (int i = 1; i < argc; i++)
+	{
+		std::string arg = ToNarrow(argv[i]);
+
+		if (arg.find("fivem:") == 0)
+		{
+			std::error_code ec;
+			network::uri parsed = network::make_uri(arg, ec);
+
+			if (!static_cast<bool>(ec))
+			{
+				if (parsed.host())
+				{
+					if (*parsed.host() == "connect")
+					{
+						if (parsed.path())
+						{
+							connectHost = parsed.path()->substr(1).to_string();
+						}
+					}
+				}
+			}
+
+			break;
+		}
+	}
+
+	LocalFree(argv);
+
+	if (connectHost.empty())
+	{
+		return;
+	}
+
+	static HostSharedData<CfxState> hostData("CfxInitState");
+
+	if (hostData->IsMasterProcess())
+	{
+		rage::OnInitFunctionStart.Connect([](rage::InitFunctionType type)
+		{
+			if (type == rage::InitFunctionType::INIT_CORE)
+			{
+				ConnectTo(connectHost);
+				connectHost = "";
+			}
+		}, 999999);
+	}
+	else
+	{
+		nng_socket socket;
+		nng_dialer dialer;
+
+		nng_push0_open(&socket);
+		nng_dial(socket, "ipc:///tmp/fivem_connect", &dialer, 0);
+		nng_send(socket, const_cast<char*>(connectHost.c_str()), connectHost.size(), 0);
+
+		TerminateProcess(GetCurrentProcess(), 0);
+	}
+}
+
+static InitFunction connectInitFunction([]()
+{
+	static nng_socket netSocket;
+	static nng_listener listener;
+
+	nng_pull0_open(&netSocket);
+	nng_listen(netSocket, "ipc:///tmp/fivem_connect", &listener, 0);
+
+	OnGameFrame.Connect([]()
+	{
+		if (Instance<ICoreGameInit>::Get()->GetGameLoaded())
+		{
+			return;
+		}
+
+		char* buffer;
+		size_t bufLen;
+
+		int err = nng_recv(netSocket, &buffer, &bufLen, NNG_FLAG_NONBLOCK | NNG_FLAG_ALLOC);
+
+		if (err == 0)
+		{
+			std::string connectMsg(buffer, buffer + bufLen);
+			nng_free(buffer, bufLen);
+
+			ConnectTo(connectMsg);
+		}
+	});
+});
+
+static HookFunction hookFunction([]()
+{
+	ProtocolRegister();
 });

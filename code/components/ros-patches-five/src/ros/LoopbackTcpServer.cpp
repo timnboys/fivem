@@ -44,7 +44,7 @@ void LoopbackTcpServerStream::HandleRead(const char* buffer, int length)
 
 int LoopbackTcpServerStream::HandleWrite(char* buffer, size_t length)
 {
-	int toRead = min(m_outQueue.size(), length);
+	int toRead = fwMin(m_outQueue.size(), length);
 
 	std::unique_lock<std::recursive_mutex> lock(m_mutex);
 
@@ -1364,7 +1364,7 @@ void RunLauncher(const wchar_t* toolName, bool instantWait)
 	const wchar_t* newCommandLine = va(L"\"%s\" %s --parent_pid=%d \"%s\"", fxApplicationName, toolName, GetCurrentProcessId(), MakeRelativeGamePath(L"GTAVLauncher.exe").c_str());
 
 	// create a waiting event
-	HANDLE hEvent = CreateEvent(nullptr, FALSE, FALSE, L"CitizenFX_GTA5_ClearedForLaunch");
+	HANDLE hEvent = CreateEvent(nullptr, TRUE, FALSE, L"CitizenFX_GTA5_ClearedForLaunch");
 
 	// and go create the new fake process
 	PROCESS_INFORMATION pi;
@@ -1465,6 +1465,37 @@ static BOOL __stdcall EP_HttpQueryInfoW(HANDLE internet, DWORD infoLevel, LPVOID
 	return g_oldHttpQueryInfoW(internet, infoLevel, buffer, bufferLength, index);
 }
 
+static HANDLE(__stdcall* g_oldCreateFileA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+
+static hook::cdecl_stub<void(int, int)> setupLoadingScreens([]()
+{
+	// trailing byte differs between 323 and 505
+	return hook::get_call(hook::get_pattern("8D 4F 08 33 D2 E8 ? ? ? ? C6", 5));
+});
+
+static HANDLE __stdcall CreateFileAStub(
+	_In_     LPCSTR               lpFileName,
+	_In_     DWORD                 dwDesiredAccess,
+	_In_     DWORD                 dwShareMode,
+	_In_opt_ LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+	_In_     DWORD                 dwCreationDisposition,
+	_In_     DWORD                 dwFlagsAndAttributes,
+	_In_opt_ HANDLE                hTemplateFile)
+{
+	if (strcmp(lpFileName, "\\\\.\\pipe\\GTAVLauncher_Pipe") == 0)
+	{
+		trace("Opening GTAVLauncher_Pipe, waiting for launcher to load...\n");
+
+		WaitNamedPipe(L"\\\\.\\pipe\\GTAVLauncher_Pipe", INFINITE);
+
+		WaitForLauncher();
+
+		trace("Launcher is fine, continuing!\n");
+	}
+
+	return g_oldCreateFileA(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
+}
+
 static InitFunction initFunction([] ()
 {
 	g_manager = new LoopbackTcpServerManager();
@@ -1534,7 +1565,39 @@ static InitFunction hookFunction([] ()
 	DO_HOOK(L"wininet.dll", "HttpQueryInfoW", EP_HttpQueryInfoW, g_oldHttpQueryInfoW);
 	DO_HOOK(L"wininet.dll", "InternetOpenW", EP_InternetOpenW, g_oldInternetOpenW);
 
+	DO_HOOK(L"kernel32.dll", "CreateFileA", CreateFileAStub, g_oldCreateFileA);
+
 	trace("hello from %s\n", GetCommandLineA());
 
 	MH_EnableHook(MH_ALL_HOOKS);
 }, -1000);
+
+static void(*g_origRlineInit)(int);
+static void(*g_origCloudInit)(int);
+static void(*g_origTextureInit)();
+
+static bool InitRlineWrap()
+{
+	g_origRlineInit(1);
+	g_origCloudInit(1);
+	g_origTextureInit();
+
+	return true;
+}
+
+template<typename TFn, typename T>
+inline void NopAndSetCall(TFn* fn, T loc)
+{
+	hook::set_call(fn, loc);
+	hook::nop(loc, 5);
+}
+
+static HookFunction hookFunction2([]()
+{
+	auto loc = hook::get_pattern<char>("33 C9 E8 ? ? ? ? 41 8B CE E8 ? ? ? ? 41", 10);
+	NopAndSetCall(&g_origRlineInit, loc);
+	NopAndSetCall(&g_origCloudInit, loc + 8);
+	NopAndSetCall(&g_origTextureInit, hook::get_pattern("C7 45 38 99 3B 6D F6", 19));
+
+	hook::call(hook::get_pattern("8D 4A 03 E8 ? ? ? ? E8 ? ? ? ? 84 C0 75", 8), InitRlineWrap);
+});

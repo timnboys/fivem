@@ -31,6 +31,8 @@ public:
 
 	bool EnhancedHostSupport = false;
 
+	bool OneSyncEnabled = false;
+
 private:
 	std::set<std::string, std::less<>> VariableList;
 
@@ -47,11 +49,15 @@ public:
 
 	inline void SetVariable(const std::string& variable)
 	{
+		OnSetVariable(variable, true);
+
 		VariableList.insert(variable);
 	}
 
 	inline void ClearVariable(const std::string& variable)
 	{
+		OnSetVariable(variable, false);
+
 		VariableList.erase(variable);
 	}
 
@@ -86,6 +92,8 @@ public:
 	fwEvent<> OnGameRequestLoad;
 
 	fwEvent<> OnShutdownSession;
+
+	fwEvent<const std::string&, bool> OnSetVariable;
 };
 
 DECLARE_INSTANCE_TYPE(ICoreGameInit);

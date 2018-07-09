@@ -2,13 +2,15 @@ import {BrowserModule} from '@angular/platform-browser';
 import {NgModule} from '@angular/core';
 import {FormsModule} from '@angular/forms';
 import {HttpModule} from '@angular/http';
+import {HttpClientModule} from '@angular/common/http';
 
 import { environment } from '../environments/environment'
 
 import {VirtualScrollModule} from 'angular2-virtual-scroll';
-import {TranslationModule} from 'angular-l10n';
+import {TranslationModule, L10nConfig, L10nLoader, ProviderType} from 'angular-l10n';
 import {MomentModule} from 'angular2-moment';
-import {Angulartics2Module, Angulartics2Piwik} from 'angulartics2';
+import {Angulartics2Module} from 'angulartics2';
+import {Angulartics2Piwik} from 'angulartics2/piwik';
 
 import {AppRoutingModule} from './app-routing.module';
 import {AppComponent} from './app.component';
@@ -24,6 +26,8 @@ import {ServersListComponent} from './servers/components/servers-list.component'
 import {ServersListItemComponent} from './servers/components/servers-list-item.component';
 import {ServersListHeaderComponent} from './servers/components/servers-list-header.component';
 import {ServerFilterComponent} from './servers/components/server-filter.component';
+import {ServersDetailComponent} from './servers/components/servers-detail.component';
+import {PlayerAvatarComponent} from './servers/components/player-avatar.component';
 import {DirectConnectComponent} from './servers/direct/direct-connect.component';
 
 import {ServersService} from './servers/servers.service';
@@ -34,6 +38,20 @@ import {GameService, CfxGameService, DummyGameService} from './game.service';
 
 import {ColorizePipe} from './colorize.pipe';
 import {EscapePipe} from './escape.pipe';
+
+const l10nConfig: L10nConfig = {
+	locale: {
+		languages: [
+			{ code: 'en', dir: 'ltr' }
+		],
+		language: 'en'
+	},
+	translation: {
+		providers: [
+			{ type: ProviderType.Static, prefix: './assets/locale-' }
+		]
+	}
+};
 
 @NgModule({
 	declarations: [
@@ -48,7 +66,9 @@ import {EscapePipe} from './escape.pipe';
 		ServersListItemComponent,
 		ServersListHeaderComponent,
 		ServerFilterComponent,
+		ServersDetailComponent,
 		DirectConnectComponent,
+		PlayerAvatarComponent,
 		ColorizePipe,
 		EscapePipe
 	],
@@ -59,7 +79,8 @@ import {EscapePipe} from './escape.pipe';
 		AppRoutingModule,
 		VirtualScrollModule,
 		MomentModule,
-		TranslationModule.forRoot(),
+		HttpClientModule,
+		TranslationModule.forRoot(l10nConfig),
 		Angulartics2Module.forRoot([ Angulartics2Piwik ])
 	],
 	providers:    [
@@ -67,7 +88,7 @@ import {EscapePipe} from './escape.pipe';
 		TweetService,
 		{
 			provide:  GameService,
-			useClass: environment.production
+			useClass: (environment.production && !environment.web)
 				? CfxGameService
 				: DummyGameService
 		},
@@ -78,4 +99,7 @@ import {EscapePipe} from './escape.pipe';
 	]
 })
 export class AppModule {
+	constructor(public l10nLoader: L10nLoader) {
+		this.l10nLoader.load();
+	}
 }

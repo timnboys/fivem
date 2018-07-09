@@ -12,8 +12,23 @@
 #include <ResourceManager.h>
 #include <fxScripting.h>
 
+#include <ScriptSerialization.h>
+
 #include <CoreConsole.h>
 #include <se/Security.h>
+
+struct CommandObject
+{
+	std::string name;
+
+	CommandObject(const std::string& name)
+		: name(name)
+	{
+
+	}
+
+	MSGPACK_DEFINE_MAP(name);
+};
 
 static InitFunction initFunction([] ()
 {
@@ -111,6 +126,31 @@ static InitFunction initFunction([] ()
 		}
 	});
 
+	fx::ScriptEngine::RegisterNativeHandler("GET_REGISTERED_COMMANDS", [](fx::ScriptContext& context)
+	{
+		std::vector<CommandObject> commandList;
+
+		fx::OMPtr<IScriptRuntime> runtime;
+
+		if (FX_SUCCEEDED(fx::GetCurrentScriptRuntime(&runtime)))
+		{
+			fx::Resource* resource = reinterpret_cast<fx::Resource*>(runtime->GetParentObject());
+
+			if (resource)
+			{
+				auto resourceManager = resource->GetManager();
+				auto consoleCxt = resourceManager->GetComponent<console::Context>();
+
+				consoleCxt->GetCommandManager()->ForAllCommands([&](const std::string& commandName)
+				{
+					commandList.emplace_back(commandName);
+				});
+
+				context.SetResult(fx::SerializeObject(commandList));
+			}
+		}
+	});
+
 	fx::ScriptEngine::RegisterNativeHandler("GET_INSTANCE_ID", [](fx::ScriptContext& context)
 	{
 		fx::OMPtr<IScriptRuntime> runtime;
@@ -150,5 +190,47 @@ static InitFunction initFunction([] ()
 		}
 
 		context.SetResult(resources[i]->GetName().c_str());
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("GET_RESOURCE_STATE", [](fx::ScriptContext& context)
+	{
+		// find the resource
+		fx::ResourceManager* resourceManager = fx::ResourceManager::GetCurrent();
+		fwRefContainer<fx::Resource> resource = resourceManager->GetResource(context.GetArgument<const char*>(0));
+
+		if (!resource.GetRef())
+		{
+			context.SetResult<const char*>("missing");
+			return;
+		}
+
+		auto state = resource->GetState();
+
+		switch (state)
+		{
+		case fx::ResourceState::Started:
+			context.SetResult<const char*>("started");
+			break;
+		case fx::ResourceState::Starting:
+			context.SetResult<const char*>("starting");
+			break;
+		case fx::ResourceState::Stopped:
+			context.SetResult<const char*>("stopped");
+			break;
+		case fx::ResourceState::Stopping:
+			context.SetResult<const char*>("stopping");
+			break;
+		case fx::ResourceState::Uninitialized:
+			context.SetResult<const char*>("uninitialized");
+			break;
+		default:
+			context.SetResult<const char*>("unknown");
+			break;
+		}
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("IS_ACE_ALLOWED", [](fx::ScriptContext& context)
+	{
+		context.SetResult(seCheckPrivilege(context.CheckArgument<const char*>(0)));
 	});
 });

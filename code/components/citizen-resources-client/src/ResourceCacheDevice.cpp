@@ -10,6 +10,7 @@
 
 #include <ResourceManager.h>
 
+#include <concurrent_unordered_map.h>
 #include <concurrent_unordered_set.h>
 
 #include <ICoreGameInit.h>
@@ -26,7 +27,26 @@ namespace fx
 
 #include <Error.h>
 
+static concurrency::concurrent_unordered_set<std::string> g_downloadingSet;
 static concurrency::concurrent_unordered_set<std::string> g_downloadedSet;
+
+static concurrency::concurrent_unordered_map<std::string, std::shared_ptr<ResourceCacheDevice::FileData>> g_fileDataSet;
+
+inline std::shared_ptr<ResourceCacheDevice::FileData> GetFileDataForEntry(const std::string& refHash)
+{
+	auto it = g_fileDataSet.find(refHash);
+
+	if (it == g_fileDataSet.end())
+	{
+		auto ptr = std::make_shared<ResourceCacheDevice::FileData>();
+
+		g_fileDataSet[refHash] = { ptr };
+
+		return std::move(ptr);
+	}
+
+	return it->second;
+}
 
 ResourceCacheDevice::ResourceCacheDevice(std::shared_ptr<ResourceCache> cache, bool blocking)
 	: ResourceCacheDevice(cache, blocking, cache->GetCachePath())
@@ -86,7 +106,8 @@ ResourceCacheDevice::THandle ResourceCacheDevice::OpenInternal(const std::string
 	// is this a bulk handle?
 	handleData->bulkHandle = (bulkPtr != nullptr);
 	handleData->entry = entry.get();
-	handleData->status = HandleData::StatusNotFetched;
+	handleData->fileData = GetFileDataForEntry(entry->referenceHash);
+	handleData->fileData->status = FileData::StatusNotFetched;
 
 	// open the file beforehand if it's in the cache
 	auto cacheEntry = m_cache->GetEntryFor(entry->referenceHash);
@@ -103,15 +124,36 @@ ResourceCacheDevice::THandle ResourceCacheDevice::OpenInternal(const std::string
 
 			if (handleData->parentHandle != InvalidHandle)
 			{
-				handleData->status = HandleData::StatusFetched;
-				handleData->metaData = cacheEntry->GetMetaData();
+				{
+					std::unique_lock<std::mutex> lock(handleData->fileData->fetchLock);
 
-				MarkFetched(handleData);
+					handleData->fileData->status = FileData::StatusFetched;
+					handleData->fileData->metaData = cacheEntry->GetMetaData();
+
+					MarkFetched(handleData);
+				}
+
+				// validate RSC-ness of the file
+				if (bulkPtr)
+				{
+					if (entry->extData.find("rscVersion") != entry->extData.end() && entry->extData["rscVersion"] != "0")
+					{
+						char rscHeader[4];
+						this->ReadBulk(handle, 0, &rscHeader, 4);
+
+						memcpy(handleData->fileData->rscHeader, rscHeader, 4);
+
+						if (rscHeader[0] != 'R' || rscHeader[1] != 'S' || rscHeader[2] != 'C')
+						{
+							handleData->fileData->status = FileData::StatusNotFetched;
+						}
+					}
+				}
 			}
 		}
 	}
 
-	if (handleData->status != HandleData::StatusFetched)
+	if (handleData->fileData->status != FileData::StatusFetched)
 	{
 		if (g_downloadedSet.find(handleData->entry.referenceHash) != g_downloadedSet.end())
 		{
@@ -147,10 +189,12 @@ auto ResourceCacheDevice::AllocateHandle(THandle* idx) -> HandleData*
 
 	for (int i = 0; i < _countof(m_handles); i++)
 	{
-		if (m_handles[i].status == HandleData::StatusEmpty)
+		if (!m_handles[i].allocated)
 		{
 			*idx = i;
-			m_handles[i].status = HandleData::StatusError;
+			m_handles[i].allocated = true;
+			m_handles[i].parentDevice = nullptr;
+			m_handles[i].parentHandle = INVALID_DEVICE_HANDLE;
 
 			return &m_handles[i];
 		}
@@ -161,24 +205,47 @@ auto ResourceCacheDevice::AllocateHandle(THandle* idx) -> HandleData*
 	return nullptr;
 }
 
+static int GetWeightForFileName(const std::string& fileName)
+{
+	auto ext = fileName.substr(fileName.find_last_of('.'));
+
+	if (ext == ".ybn" || ext == ".ymap" || ext == ".ytyp")
+	{
+		return 255;
+	}
+	else if (ext == ".ydd" || ext == ".ydr")
+	{
+		return 128;
+	}
+	else if (ext == ".ytd" || ext == ".rpf" || ext == ".gfx")
+	{
+		return 64;
+	}
+	else if (fileName.find("+hi") != std::string::npos || fileName.find("_hi") != std::string::npos)
+	{
+		return 16;
+	}
+
+	return 32;
+}
+
 bool ResourceCacheDevice::EnsureFetched(HandleData* handleData)
 {
 	PROFILE;
 
 	// is it fetched already?
-	if (handleData->status == HandleData::StatusFetched)
+	if (handleData->fileData->status == FileData::StatusFetched)
 	{
 		return true;
 	}
 
-	if (handleData->status == HandleData::StatusFetching)
+	if (handleData->fileData->status == FileData::StatusFetching)
 	{
 		if (m_blocking)
 		{
 			BROFILER_EVENT("block on Fetching");
 
-			std::unique_lock<std::mutex> lock(handleData->lockMutex);
-			handleData->lockVar.wait(lock);
+			WaitForSingleObject(handleData->fileData->eventHandle, INFINITE);
 		}
 
 		return false;
@@ -186,126 +253,166 @@ bool ResourceCacheDevice::EnsureFetched(HandleData* handleData)
 
 	BROFILER_EVENT("set StatusFetching");
 
-	handleData->status = HandleData::StatusFetching;
-
-	// log the request starting
-	uint32_t initTime = timeGetTime();
-
-	trace(__FUNCTION__ " downloading %s (hash %s) from %s\n", handleData->entry.basename.c_str(), handleData->entry.referenceHash.c_str(), handleData->entry.remoteUrl.c_str());
+	ResetEvent(handleData->fileData->eventHandle);
+	handleData->fileData->status = FileData::StatusFetching;
 
 	// file extension for cache stuff
 	std::string extension = handleData->entry.basename.substr(handleData->entry.basename.find_last_of('.') + 1);
 	std::string outFileName = m_cachePath + extension + "_" + handleData->entry.referenceHash;
 
-	HttpRequestOptions options;
-	options.progressCallback = [this, handleData](const ProgressInfo& info)
+	auto openFile = [=]()
 	{
-		handleData->downloadProgress = info.downloadNow;
-		handleData->downloadSize = info.downloadTotal;
+		// open the file as desired
+		handleData->parentDevice = vfs::GetDevice(outFileName);
 
-		if (info.downloadTotal != 0)
+		if (handleData->parentDevice.GetRef())
 		{
-			fx::OnCacheDownloadStatus(fmt::sprintf("%s%s/%s", m_pathPrefix, handleData->entry.resourceName, handleData->entry.basename), info.downloadNow, info.downloadTotal);
+			handleData->parentHandle = (handleData->bulkHandle) ?
+				handleData->parentDevice->OpenBulk(outFileName, &handleData->bulkPtr) :
+				handleData->parentDevice->Open(outFileName, true);
 		}
+
+		MarkFetched(handleData);
 	};
 
-	std::string connectionToken;
-	if (Instance<ICoreGameInit>::Get()->GetData("connectionToken", &connectionToken))
+	if (g_downloadingSet.find(handleData->entry.referenceHash) == g_downloadingSet.end())
 	{
-		options.headers["X-CitizenFX-Token"] = connectionToken;
-	}
+		// mark this hash as downloading (to prevent multiple concurrent downloads)
+		g_downloadingSet.insert(handleData->entry.referenceHash);
 
-	// http request
-	m_httpClient->DoFileGetRequest(handleData->entry.remoteUrl, vfs::GetDevice(m_cachePath), outFileName, options, [=] (bool result, const char* errorData, size_t outSize)
-	{
-		if (result)
+		// log the request starting
+		uint32_t initTime = timeGetTime();
+
+		trace(__FUNCTION__ " downloading %s (hash %s) from %s\n", handleData->entry.basename.c_str(), handleData->entry.referenceHash.c_str(), handleData->entry.remoteUrl.c_str());
+
+		HttpRequestOptions options;
+		options.progressCallback = [this, handleData](const ProgressInfo& info)
 		{
-			auto device = vfs::GetDevice(outFileName);
-			outSize = device->GetLength(outFileName);
+			handleData->downloadProgress = info.downloadNow;
+			handleData->downloadSize = info.downloadTotal;
+
+			if (info.downloadTotal != 0)
+			{
+				fx::OnCacheDownloadStatus(fmt::sprintf("%s%s/%s", m_pathPrefix, handleData->entry.resourceName, handleData->entry.basename), info.downloadNow, info.downloadTotal);
+			}
+		};
+
+		options.weight = GetWeightForFileName(handleData->entry.basename);
+
+		std::string connectionToken;
+		if (Instance<ICoreGameInit>::Get()->GetData("connectionToken", &connectionToken))
+		{
+			options.headers["X-CitizenFX-Token"] = connectionToken;
 		}
 
-		if (!result || outSize == 0)
+		auto entryRef = handleData->entry;
+		auto fileDataRef = handleData->fileData;
+
+		// http request
+		handleData->getRequest = m_httpClient->DoFileGetRequest(handleData->entry.remoteUrl, vfs::GetDevice(m_cachePath), outFileName, options, [=](bool result, const char* errorData, size_t outSize)
 		{
-			handleData->status = HandleData::StatusError;
-
-			ICoreGameInit* init = Instance<ICoreGameInit>::Get();
-			std::string reason;
-
-			std::string caller;
-			std::string initTime;
-
-			if (init->GetData("gta-core-five:loadCaller", &caller))
+			if (result)
 			{
-				if (!caller.empty())
+				auto device = vfs::GetDevice(outFileName);
+				outSize = device->GetLength(outFileName);
+			}
+
+			if (!result || outSize == 0)
+			{
+				fileDataRef->status = FileData::StatusError;
+
+				if (handleData->fileData == fileDataRef)
 				{
-					init->GetData("gta-core-five:loadTime", &initTime);
+					handleData->getRequest = {};
+				}
 
-					uint64_t time = GetTickCount64() - _atoi64(initTime.c_str());
+				ICoreGameInit* init = Instance<ICoreGameInit>::Get();
+				std::string reason;
 
-					reason = fmt::sprintf("\nThis happened during a LoadObjectsNow call from %s, which by now took %d msec. Please report this.", caller, time);
+				std::string caller;
+				std::string initTime;
+
+				if (init->GetData("gta-core-five:loadCaller", &caller))
+				{
+					if (!caller.empty())
+					{
+						init->GetData("gta-core-five:loadTime", &initTime);
+
+						uint64_t time = GetTickCount64() - _atoi64(initTime.c_str());
+
+						reason = fmt::sprintf("\nThis happened during a LoadObjectsNow call from %s, which by now took %d msec. Please report this.", caller, time);
+					}
+				}
+
+				if (outSize == 0)
+				{
+					reason += "\nThe file was empty.";
+				}
+
+				trace("ResourceCacheDevice reporting failure: %s%s", errorData, reason);
+				init->SetData("rcd:error", fmt::sprintf("Failed in ResourceCacheDevice: error result %s%s", errorData, reason));
+			}
+			else
+			{
+				// log success
+				trace("ResourceCacheDevice: downloaded %s in %d msec (size %d)\n", entryRef.basename.c_str(), (timeGetTime() - initTime), outSize);
+
+				if (g_downloadedSet.find(entryRef.referenceHash) != g_downloadedSet.end())
+				{
+					trace("Downloaded the same asset (%s) twice in the same run - that's bad.\n", entryRef.basename);
+				}
+
+				g_downloadedSet.insert(entryRef.referenceHash);
+
+				std::unique_lock<std::mutex> lock(fileDataRef->fetchLock);
+
+				// add the file to the resource cache
+				std::map<std::string, std::string> metaData;
+				metaData["filename"] = entryRef.basename;
+				metaData["resource"] = entryRef.resourceName;
+				metaData["from"] = entryRef.remoteUrl;
+
+				AddEntryToCache(outFileName, metaData, entryRef);
+
+				fileDataRef->metaData = metaData;
+
+				if (!m_blocking && handleData->fileData == fileDataRef)
+				{
+					openFile();
+				}
+
+				fileDataRef->status = FileData::StatusFetched;
+
+				if (handleData->fileData == fileDataRef)
+				{
+					handleData->getRequest = {};
 				}
 			}
 
-			if (outSize == 0)
-			{
-				reason += "\nThe file was empty.";
-			}
-
-			trace("ResourceCacheDevice reporting failure: %s%s", errorData, reason);
-			init->SetData("rcd:error", fmt::sprintf("Failed in ResourceCacheDevice: error result %s%s", errorData, reason));
-		}
-		else
-		{
-			// log success
-			trace("ResourceCacheDevice: downloaded %s in %d msec (size %d)\n", handleData->entry.basename.c_str(), (timeGetTime() - initTime), outSize);
-
-			if (g_downloadedSet.find(handleData->entry.referenceHash) != g_downloadedSet.end())
-			{
-				trace("Downloaded the same asset (%s) twice in the same run - that's bad.\n", handleData->entry.basename);
-			}
-
-			g_downloadedSet.insert(handleData->entry.referenceHash);
-
-			// add the file to the resource cache
-			std::map<std::string, std::string> metaData;
-			metaData["filename"] = handleData->entry.basename;
-			metaData["resource"] = handleData->entry.resourceName;
-			metaData["from"] = handleData->entry.remoteUrl;
-
-			AddEntryToCache(outFileName, metaData, handleData);
-
-			// open the file as desired
-			handleData->parentDevice = vfs::GetDevice(outFileName);
-
-			if (handleData->parentDevice.GetRef())
-			{
-				handleData->parentHandle = (handleData->bulkHandle) ?
-					handleData->parentDevice->OpenBulk(outFileName, &handleData->bulkPtr) : 
-					handleData->parentDevice->Open(outFileName, true);
-			}
-
-			handleData->metaData = metaData;
-			MarkFetched(handleData);
-
-			handleData->status = HandleData::StatusFetched;
-		}
-
-		// unblock the mutex
-		handleData->lockVar.notify_all();
-	});
+			// unblock the mutex
+			SetEvent(fileDataRef->eventHandle);
+		});
+	}
 
 	if (m_blocking)
 	{
 		BROFILER_EVENT("block on NotFetched");
 
-		std::unique_lock<std::mutex> lock(handleData->lockMutex);
-		handleData->lockVar.wait(lock);
+		if (handleData->fileData->status == FileData::StatusFetching)
+		{
+			WaitForSingleObject(handleData->fileData->eventHandle, INFINITE);
+		}
 	}
 
-	return (handleData->status == HandleData::StatusFetched);
+	if (handleData->fileData->status == FileData::StatusFetched && (handleData->parentDevice.GetRef() == nullptr || handleData->parentHandle == INVALID_DEVICE_HANDLE))
+	{
+		openFile();
+	}
+
+	return (handleData->fileData->status == FileData::StatusFetched);
 }
 
-void ResourceCacheDevice::AddEntryToCache(const std::string& outFileName, std::map<std::string, std::string>& metaData, HandleData* handleData)
+void ResourceCacheDevice::AddEntryToCache(const std::string& outFileName, std::map<std::string, std::string>& metaData, const ResourceCacheEntryList::Entry& entryRef)
 {
 	m_cache->AddEntry(outFileName, metaData);
 }
@@ -324,11 +431,11 @@ size_t ResourceCacheDevice::Read(THandle handle, void* outBuffer, size_t size)
 	bool fetched = EnsureFetched(handleData);
 
 	// not fetched and non-blocking - return 0
-	if (handleData->status == HandleData::StatusNotFetched || handleData->status == HandleData::StatusFetching)
+	if (handleData->fileData->status == FileData::StatusNotFetched || handleData->fileData->status == FileData::StatusFetching)
 	{
 		return 0;
 	}
-	else if (handleData->status == HandleData::StatusError)
+	else if (handleData->fileData->status == FileData::StatusError)
 	{
 		return -1;
 	}
@@ -345,17 +452,28 @@ size_t ResourceCacheDevice::ReadBulk(THandle handle, uint64_t ptr, void* outBuff
 	bool fetched = EnsureFetched(handleData);
 
 	// special sentinel for PatchStreamingPreparation to determine if file is fetched
-	if (size == 0xFFFFFFFE)
+	if (size == 0xFFFFFFFE || size == 0xFFFFFFFD)
 	{
-		return (handleData->status == HandleData::StatusFetched) ? 2048 : 0;
+		auto getRequest = handleData->getRequest;
+
+		if (getRequest)
+		{
+			// if FFFFFFFE, this is an active request; if FFFFFFFD, this isn't
+			// no ExtensionCtl support exists for RageVFSDeviceAdapter yet, so we do it this way
+			int newWeight = (size == 0xFFFFFFFE) ? -1 : 1;
+
+			getRequest->SetRequestWeight(newWeight);
+		}
+
+		return (handleData->fileData->status == FileData::StatusFetched) ? 2048 : 0;
 	}
 
 	// not fetched and non-blocking - return 0
-	if (handleData->status == HandleData::StatusNotFetched || handleData->status == HandleData::StatusFetching)
+	if (handleData->fileData->status == FileData::StatusNotFetched || handleData->fileData->status == FileData::StatusFetching)
 	{
 		return 0;
 	}
-	else if (handleData->status == HandleData::StatusError)
+	else if (handleData->fileData->status == FileData::StatusError)
 	{
 		return -1;
 	}
@@ -369,7 +487,7 @@ size_t ResourceCacheDevice::Seek(THandle handle, intptr_t offset, int seekType)
 	auto handleData = &m_handles[handle];
 
 	// make sure the file is fetched
-	if (handleData->status != HandleData::StatusFetched)
+	if (handleData->fileData->status != FileData::StatusFetched)
 	{
 		return -1;
 	}
@@ -385,13 +503,14 @@ bool ResourceCacheDevice::Close(THandle handle)
 	bool retval = true;
 
 	// close any parent device handle
-	if (handleData->status == HandleData::StatusFetched)
+	if (handleData->parentDevice.GetRef() && handleData->parentHandle != INVALID_DEVICE_HANDLE)
 	{
 		retval = handleData->parentDevice->Close(handleData->parentHandle);
 	}
 
 	// clear the handle and return
-	handleData->status = HandleData::StatusEmpty;
+	handleData->fileData = nullptr;
+	handleData->allocated = false;
 
 	return retval;
 }
@@ -404,13 +523,14 @@ bool ResourceCacheDevice::CloseBulk(THandle handle)
 	bool retval = true;
 
 	// close any parent device handle
-	if (handleData->status == HandleData::StatusFetched)
+	if (handleData->parentDevice.GetRef() && handleData->parentHandle != INVALID_DEVICE_HANDLE)
 	{
 		retval = handleData->parentDevice->CloseBulk(handleData->parentHandle);
 	}
 
 	// clear the handle and return
-	handleData->status = HandleData::StatusEmpty;
+	handleData->fileData = nullptr;
+	handleData->allocated = false;
 
 	return retval;
 }
@@ -435,7 +555,7 @@ size_t ResourceCacheDevice::GetLength(THandle handle)
 	auto handleData = &m_handles[handle];
 
 	// close any parent device handle
-	if (handleData->status == HandleData::StatusFetched)
+	if (handleData->fileData->status == FileData::StatusFetched)
 	{
 		return handleData->parentDevice->GetLength(handleData->parentHandle);
 	}
@@ -453,6 +573,117 @@ size_t ResourceCacheDevice::GetLength(const std::string& fileName)
 	}
 
 	return -1;
+}
+
+uint32_t ResourceCacheDevice::GetAttributes(const std::string& fileName)
+{
+	auto entry = GetEntryForFileName(fileName);
+
+	if (entry)
+	{
+		return 0;
+	}
+
+	return -1;
+}
+
+#define VFS_GET_RAGE_PAGE_FLAGS 0x20001
+
+struct ResourceFlags
+{
+	uint32_t flag1;
+	uint32_t flag2;
+};
+
+struct GetRagePageFlagsExtension
+{
+	const char* fileName; // in
+	int version;
+	ResourceFlags flags; // out
+};
+
+#define VFS_GET_RCD_DEBUG_INFO 0x30001
+
+struct GetRcdDebugInfoExtension
+{
+	const char* fileName; // in
+	std::string outData; // out
+};
+
+static const char* StatusToString(ResourceCacheDevice::FileData::Status status)
+{
+	switch (status)
+	{
+	case ResourceCacheDevice::FileData::StatusEmpty:
+		return "StatusEmpty";
+	case ResourceCacheDevice::FileData::StatusFetched:
+		return "StatusFetched";
+	case ResourceCacheDevice::FileData::StatusFetching:
+		return "StatusFetching";
+	case ResourceCacheDevice::FileData::StatusNotFetched:
+		return "StatusNotFetched";
+	case ResourceCacheDevice::FileData::StatusError:
+		return "StatusError";
+	}
+}
+
+#include <IteratorView.h>
+
+extern std::unordered_multimap<std::string, std::pair<std::string, std::string>> g_referenceHashList;
+
+bool ResourceCacheDevice::ExtensionCtl(int controlIdx, void* controlData, size_t controlSize)
+{
+	if (controlIdx == VFS_GET_RAGE_PAGE_FLAGS)
+	{
+		GetRagePageFlagsExtension* data = (GetRagePageFlagsExtension*)controlData;
+
+		auto entry = GetEntryForFileName(data->fileName);
+
+		if (entry)
+		{
+			data->version = atoi(entry->extData["rscVersion"].c_str());
+			data->flags.flag1 = strtoul(entry->extData["rscPagesVirtual"].c_str(), nullptr, 10);
+			data->flags.flag2 = strtoul(entry->extData["rscPagesPhysical"].c_str(), nullptr, 10);
+			return true;
+		}
+	}
+	else if (controlIdx == VFS_GET_RCD_DEBUG_INFO)
+	{
+		GetRcdDebugInfoExtension* data = (GetRcdDebugInfoExtension*)controlData;
+
+		auto entry = GetEntryForFileName(data->fileName);
+
+		if (entry)
+		{
+			auto fileData = GetFileDataForEntry(entry->referenceHash);
+
+			data->outData = fmt::sprintf("RSC version: %d\nRSC page flags: virt %08x/phys %08x\nResource name: %s\nReference hash: %s\n", 
+				atoi(entry->extData["rscVersion"].c_str()),
+				strtoul(entry->extData["rscPagesVirtual"].c_str(), nullptr, 10),
+				strtoul(entry->extData["rscPagesPhysical"].c_str(), nullptr, 10),
+				entry->resourceName,
+				entry->referenceHash);
+
+			if (fileData)
+			{
+				data->outData += fmt::sprintf("Status: %s\nDownloaded now: %s\nRSC header: %02x %02x %02x %02x\n\n",
+					StatusToString(fileData->status),
+					(g_downloadedSet.find(entry->referenceHash) != g_downloadedSet.end()) ? "Yes" : "No", 
+					fileData->rscHeader[0], fileData->rscHeader[1], fileData->rscHeader[2], fileData->rscHeader[3]);
+			}
+
+			data->outData += "Resources for hash:\n";
+
+			for (auto& views : fx::GetIteratorView(g_referenceHashList.equal_range(entry->referenceHash)))
+			{
+				data->outData += fmt::sprintf("-> %s/%s\n", views.second.first, views.second.second);
+			}
+
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void ResourceCacheDevice::SetPathPrefix(const std::string& pathPrefix)

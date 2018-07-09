@@ -24,6 +24,7 @@ vendor_component 'cpr-crt'
 vendor_component 'imgui'
 vendor_component 'enet'
 vendor_component 'tbb'
+vendor_component 'nng'
 
 vendor_component 'boost_program_options'
 vendor_component 'boost_filesystem'
@@ -31,9 +32,16 @@ vendor_component 'boost_random'
 vendor_component 'boost_system'
 
 if os.target() == 'windows' then
+	vendor_component 'discord-rpc'
 	vendor_component 'minhook' -- r
 end
 
+vendor_component 'libfvad'
+vendor_component 'webrtc-audio-processing'
 vendor_component 'pplx'
 vendor_component 'linenoise'
 vendor_component 'nghttp2'
+vendor_component 'lz4'
+vendor_component 'node'
+vendor_component 'openssl_crypto'
+vendor_component 'openssl_ssl'

@@ -14,7 +14,7 @@
 
 #include <Error.h>
 
-static NetLibrary* g_netLibrary;
+NetLibrary* g_netLibrary;
 
 #include <ws2tcpip.h>
 
@@ -35,7 +35,7 @@ int __stdcall CfxRecvFrom(SOCKET s, char * buf, int len, int flags, sockaddr * f
 	{
 		if (g_netLibrary->DequeueRoutedPacket(buffer, &length, &netID))
 		{
-			memcpy(buf, buffer, min((size_t)len, length));
+			memcpy(buf, buffer, fwMin((size_t)len, length));
 
 			sockaddr_in* outFrom = (sockaddr_in*)from;
 			memset(outFrom, 0, sizeof(sockaddr_in));
@@ -53,10 +53,10 @@ int __stdcall CfxRecvFrom(SOCKET s, char * buf, int len, int flags, sockaddr * f
 
 			if (CoreIsDebuggerPresent())
 			{
-				trace("CfxRecvFrom (from %i %s) %i bytes on %p\n", netID, addr, length, (void*)s);
+				//trace("CfxRecvFrom (from %i %s) %i bytes on %p\n", netID, addr, length, (void*)s);
 			}
 
-			return min((size_t)len, length);
+			return fwMin((size_t)len, length);
 		}
 		else
 		{
@@ -80,7 +80,7 @@ int __stdcall CfxSendTo(SOCKET s, char * buf, int len, int flags, sockaddr * to,
 
 			if (CoreIsDebuggerPresent())
 			{
-				trace("CfxSendTo (to internal address %i) %i b (from thread 0x%x)\n", (htonl(toIn->sin_addr.s_addr) & 0xFFFF) ^ 0xFEED, len, GetCurrentThreadId());
+				//trace("CfxSendTo (to internal address %i) %i b (from thread 0x%x)\n", (htonl(toIn->sin_addr.s_addr) & 0xFFFF) ^ 0xFEED, len, GetCurrentThreadId());
 			}
 		}
 		else
@@ -326,6 +326,8 @@ static hook::cdecl_stub<bool()> isSessionStarted([] ()
 	return hook::pattern("74 0E 83 B9 ? ? 00 00 ? 75 05 B8 01").count(1).get(0).get<void>(-12);
 });
 
+static bool(*_isScWaitingForInit)();
+
 #include <HostSystem.h>
 
 #include <ResourceManager.h>
@@ -375,6 +377,11 @@ struct
 
 		if (state == HS_LOADED)
 		{
+			if (_isScWaitingForInit())
+			{
+				return;
+			}
+
 			// if there's no host, start hosting - if there is, start joining
 			if (g_netLibrary->GetHostNetID() == 0xFFFF || g_netLibrary->GetHostNetID() == g_netLibrary->GetServerNetID())
 			{
@@ -586,9 +593,20 @@ static void SendMetric(const std::string& metric);
 
 static std::string g_globalServerAddress;
 
+void MumbleVoice_BindNetLibrary(NetLibrary*);
+void ObjectIds_BindNetLibrary(NetLibrary*);
+
+#include <CloneManager.h>
+
 static HookFunction initFunction([]()
 {
 	g_netLibrary = NetLibrary::Create();
+
+	TheClones->BindNetLibrary(g_netLibrary);
+
+	MumbleVoice_BindNetLibrary(g_netLibrary);
+
+	ObjectIds_BindNetLibrary(g_netLibrary);
 
 	static NetLibrary* netLibrary;
 
@@ -699,9 +717,9 @@ static HookFunction initFunction([]()
 		{
 			gameLoaded = false;
 			
-			if (*g_dlcMountCount != 105)
+			if (*g_dlcMountCount != 117)
 			{
-				GlobalError("DLC count mismatch - %d DLC mounts exist locally, but %d are expected. Please check that you have installed all core game updates and try again.", *g_dlcMountCount, 105);
+				GlobalError("DLC count mismatch - %d DLC mounts exist locally, but %d are expected. Please check that you have installed all core game updates and try again.", *g_dlcMountCount, 117);
 
 				return;
 			}
@@ -910,6 +928,11 @@ static void CustomNetFrame(void* a, void* b)
 	//OnGameFrame();
 
 	origNetFrame(a, b);
+}
+
+static int ReturnFalse()
+{
+	return false;
 }
 
 static int ReturnTrue()
@@ -1710,5 +1733,20 @@ static HookFunction hookFunction([] ()
 				break;
 			}
 		}
+	}
+
+	// async SC init
+	{
+		auto location = hook::get_pattern<char>("E8 ? ? ? ? 84 C0 75 B6 88 05");
+		hook::set_call(&_isScWaitingForInit, location);
+		hook::call(location, ReturnFalse);
+
+		void(*_processEntitlements)();
+		hook::set_call(&_processEntitlements, location - 50);
+
+		OnLookAliveFrame.Connect([_processEntitlements]()
+		{
+			_processEntitlements();
+		});
 	}
 });

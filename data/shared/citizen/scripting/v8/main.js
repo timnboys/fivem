@@ -1,6 +1,9 @@
 // CFX JS runtime
+/// <reference path="./natives_blank.d.ts" />
+/// <reference path="./natives_server.d.ts" />
 
 const EXT_FUNCREF = 10;
+const EXT_LOCALFUNCREF = 11;
 
 (function (global) {
 	let refIndex = 0;
@@ -14,6 +17,10 @@ const EXT_FUNCREF = 10;
 
 	const pack = data => msgpack.encode(data, { codec });
 	const unpack = data => msgpack.decode(data, { codec });
+	
+	// store for use by natives.js
+	global.msgpack_pack = pack;
+	global.msgpack_unpack = unpack;
 
 	/**
 	 * @param {Function} refFunction
@@ -30,19 +37,18 @@ const EXT_FUNCREF = 10;
 	function refFunctionPacker(refFunction) {
 		const ref = Citizen.makeRefFunction(refFunction);
 
-		return msgpack.encode(ref);
+		return ref;
 	}
 
 	function refFunctionUnpacker(refSerialized) {
-		const ref = msgpack.decode(refSerialized);
-
 		return function (...args) {
-			return unpack(Citizen.invokeFunctionReference(ref, pack(args)));
+			return unpack(Citizen.invokeFunctionReference(refSerialized, pack(args)));
 		};
 	}
 
 	codec.addExtPacker(EXT_FUNCREF, Function, refFunctionPacker);
 	codec.addExtUnpacker(EXT_FUNCREF, refFunctionUnpacker);
+	codec.addExtUnpacker(EXT_LOCALFUNCREF, refFunctionUnpacker);
 
 	/**
 	 * Deletes ref function
@@ -63,10 +69,10 @@ const EXT_FUNCREF = 10;
 		if (!refFunctionsMap.has(ref)) {
 			console.error('Invalid ref call attempt:', ref);
 
-			return pack({});
+			return pack([]);
 		}
 
-		return pack(refFunctionsMap.get(ref)(unpack(argsSerialized)));
+		return pack([refFunctionsMap.get(ref)(...unpack(argsSerialized))]);
 	});
 
 	/**
@@ -112,16 +118,38 @@ const EXT_FUNCREF = 10;
 
 	global.removeEventListener = emitter.off.bind(emitter);
 
+	// Convenience aliases for Lua similarity
+	global.AddEventHandler = global.addEventListener;
+	global.RegisterNetEvent = (name) => void netSafeEventNames.add(name);
+	global.RegisterServerEvent = global.RegisterNetEvent;
+	global.RemoveEventHandler = global.removeEventListener;
+
+	// Event triggering
 	global.emit = (name, ...args) => {
 		const dataSerialized = pack(args);
 
-		Citizen.invokeNative('0x91310870', name, dataSerialized, dataSerialized.length);
+		TriggerEventInternal(name, dataSerialized, dataSerialized.length);
 	};
-	global.emitNet = (name, ...args) => {
-		const dataSerialized = pack(args);
 
-		Citizen.invokeNative('0x7fdd1128', name, dataSerialized, dataSerialized.length);
-	};
+	global.TriggerEvent = global.emit;
+
+	if (IsDuplicityVersion()) {
+		global.emitNet = (name, source, ...args) => {
+			const dataSerialized = pack(args);
+	
+			TriggerClientEventInternal(name, source, dataSerialized, dataSerialized.length);
+		};
+
+		global.TriggerClientEvent = global.emitNet;
+	} else {
+		global.emitNet = (name, ...args) => {
+			const dataSerialized = pack(args);
+	
+			TriggerServerEventInternal(name, dataSerialized, dataSerialized.length);
+		};
+
+		global.TriggerServerEvent = global.emitNet;
+	}
 
 	/**
 	 * @param {string} name
@@ -132,7 +160,7 @@ const EXT_FUNCREF = 10;
 		global.source = source;
 
 		if (source.startsWith('net')) {
-			if (!netSafeEventNames.has(name)) {
+			if (emitter.listeners(name).length > 0 && !netSafeEventNames.has(name)) {
 				console.error(`Event ${name} was not safe for net`);
 
 				global.source = null;
@@ -168,4 +196,96 @@ const EXT_FUNCREF = 10;
 
 		global.source = null;
 	});
+
+	// Compatibility layer for legacy exports
+	const exportsCallbackCache = {};
+	const exportKey = (IsDuplicityVersion()) ? 'server_export' : 'export';
+	const eventType = (IsDuplicityVersion() ? 'Server' : 'Client');
+
+	const getExportEventName = (resource, name) => `__cfx_export_${resource}_${name}`;
+
+	on(`on${eventType}ResourceStart`, (resource) => {
+		if (resource === GetCurrentResourceName()) {
+			const numMetaData = GetNumResourceMetadata(resource, exportKey) || 0;
+
+			for (let i = 0; i < numMetaData; i++) {
+				const exportName = GetResourceMetadata(resource, exportKey, i);
+
+				on(getExportEventName(resource, exportName), (setCB) => {
+					if (global[exportName]) {
+						setCB(global[exportName]);
+					}
+				});
+			}
+		}
+	});
+
+	on(`on${eventType}ResourceStop`, (resource) => {
+		exportsCallbackCache[resource] = {};
+	});
+
+	// export invocation
+	const createExports = () => {
+		return new Proxy(() => {}, {
+			get(t, k) {
+				const resource = k;
+
+				return new Proxy({}, {
+					get(t, k) {
+						if (!exportsCallbackCache[resource]) {
+							exportsCallbackCache[resource] = {};
+						}
+
+						if (!exportsCallbackCache[resource][k]) {
+							emit(getExportEventName(resource, k), (exportData) => {
+								exportsCallbackCache[resource][k] = exportData;
+							});
+
+							if (!exportsCallbackCache[resource][k]) {
+								throw new Error(`No such export ${k} in resource ${resource}`);
+							}
+						}
+
+						return (...args) => {
+							try {
+								const result = exportsCallbackCache[resource][k](...args);
+
+								if (Array.isArray(result) && result.length === 1) {
+									return result[0];
+								}
+
+								return result;
+							} catch (e) {
+								console.error(e);
+
+								throw new Error(`An error happened while calling export ${k} of resource ${resource} - see above for details`);
+							}
+						};
+					},
+
+					set() {
+						throw new Error('cannot set values on an export resource');
+					}
+				});
+			},
+
+			apply(t, self, args) {
+				if (args.length !== 2) {
+					throw new Error('this needs 2 arguments');
+				}
+
+				const [ exportName, func ] = args;
+
+				on(getExportEventName(GetCurrentResourceName(), exportName), (setCB) => {
+					setCB(func);
+				});
+			},
+
+			set() {
+				throw new Error('cannot set values on exports');
+			}
+		});
+	};
+
+	global.exports = createExports();
 })(this || window);

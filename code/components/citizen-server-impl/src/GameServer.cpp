@@ -7,9 +7,22 @@
 #include <ResourceManager.h>
 #include <ResourceEventComponent.h>
 
+#include "ServerEventComponent.h"
+
 #include <NetBuffer.h>
 
+#include <state/ServerGameState.h>
+
 #include <PrintListener.h>
+
+#include <msgpack.hpp>
+
+#include <protocol/reqrep0/req.h>
+#include <protocol/reqrep0/rep.h>
+
+static fx::GameServer* g_gameServer;
+
+extern std::shared_ptr<ConVar<bool>> g_oneSyncVar;
 
 namespace fx
 {
@@ -56,8 +69,10 @@ namespace fx
 	static std::map<ENetHost*, GameServer*> g_hostInstances;
 
 	GameServer::GameServer()
-		: m_residualTime(0), m_serverTime(msec().count()), m_nextHeartbeatTime(0)
+		: m_residualTime(0), m_serverTime(msec().count()), m_nextHeartbeatTime(0), m_basePeerId(0)
 	{
+		g_gameServer = this;
+
 		seCreateContext(&m_seContext);
 
 		m_seContext->MakeCurrent();
@@ -90,12 +105,144 @@ namespace fx
 		{
 			m_thread = std::thread([=]()
 			{
+				SetThreadName(-1, "[Cfx] Server Thread");
+
 				Run();
 			});
 		}, 100);
 
 		m_clientRegistry = instance->GetComponent<ClientRegistry>().GetRef();
 		m_instance = instance;
+
+		std::thread([=]()
+		{
+			while (true)
+			{
+				for (auto& master : m_masters)
+				{
+					// if the master is set
+					std::string masterName = master->GetValue();
+
+					if (!masterName.empty())
+					{
+						// look up if not cached
+						auto address = net::PeerAddress::FromString(masterName, 30110, net::PeerAddress::LookupType::ResolveName);
+
+						if (address)
+						{
+							if (m_masterCache[masterName] != *address)
+							{
+								trace("Resolved %s to %s\n", masterName, address->ToString());
+
+								m_masterCache[masterName] = *address;
+							}
+						}
+					}
+				}
+
+				std::this_thread::sleep_for(60s);
+			}
+		}).detach();
+
+		std::thread([this]()
+		{
+			SetThreadName(-1, "[Cfx] Network Thread");
+
+			nng_socket netSocket;
+			nng_rep0_open(&netSocket);
+
+			nng_listener listener;
+			nng_listen(netSocket, "inproc://netlib_client", &listener, NNG_FLAG_NONBLOCK);
+
+			while (true)
+			{
+				// service enet with our remaining waits
+				std::vector<ENetSocket> fds;
+
+				for (auto& host : this->hosts)
+				{
+					fds.push_back(host->socket);
+				}
+
+				int rcvFd;
+				nng_getopt_int(netSocket, NNG_OPT_RECVFD, &rcvFd);
+
+				fds.push_back(rcvFd);
+
+				ENetSocketSet readfds;
+				ENET_SOCKETSET_EMPTY(readfds);
+
+				for (auto fd : fds)
+				{
+					ENET_SOCKETSET_ADD(readfds, fd);
+				}
+
+				int nfds = 0;
+
+#ifndef _WIN32
+				nfds = *std::max_element(fds.begin(), fds.end());
+#endif
+
+				enet_socketset_select(nfds, &readfds, nullptr, 20);
+
+				for (auto& host : this->hosts)
+				{
+					this->ProcessHost(host.get());
+				}
+
+				{
+					void* msgBuffer;
+					size_t msgLen;
+					
+					while (nng_recv(netSocket, &msgBuffer, &msgLen, NNG_FLAG_NONBLOCK | NNG_FLAG_ALLOC) == 0)
+					{
+						nng_free(msgBuffer, msgLen);
+
+						int ok = 0;
+						nng_send(netSocket, &ok, 4, NNG_FLAG_NONBLOCK);
+
+						m_netThreadCallbacks.Run();
+					}
+				}
+			}
+		}).detach();
+	}
+
+	void GameServer::InternalRunMainThreadCbs(nng_socket socket)
+	{
+		void* msgBuffer;
+		size_t msgLen;
+
+		while (nng_recv(socket, &msgBuffer, &msgLen, NNG_FLAG_NONBLOCK | NNG_FLAG_ALLOC) == 0)
+		{
+			nng_free(msgBuffer, msgLen);
+
+			int ok = 0;
+			nng_send(socket, &ok, 4, NNG_FLAG_NONBLOCK);
+
+			m_mainThreadCallbacks.Run();
+		}
+	}
+
+	const ENetPeer* GameServer::InternalGetPeer(int peerId)
+	{
+		if (peerId == 0)
+		{
+			return nullptr;
+		}
+
+		return m_peerHandles.left.find(peerId)->get_right();
+	}
+
+	void GameServer::InternalResetPeer(int peerId)
+	{
+		enet_peer_reset(m_peerHandles.left.find(peerId)->get_right());
+	}
+
+	void GameServer::InternalSendPacket(int peer, int channel, const net::Buffer& buffer, ENetPacketFlag flags)
+	{
+		auto packet = enet_packet_create(buffer.GetBuffer(), buffer.GetLength(), flags);
+		enet_peer_send(m_peerHandles.left.find(peer)->get_right(), channel, packet);
 	}
 
 	void GameServer::Run()
@@ -130,7 +277,15 @@ namespace fx
 		uint32_t msgType = msg.Read<uint32_t>();
 
 		// get the client
-		auto client = m_clientRegistry->GetClientByPeer(peer);
+		auto peerIdIt = m_peerHandles.right.find(peer);
+		int peerId = -1;
+
+		if (peerIdIt != m_peerHandles.right.end())
+		{
+			peerId = peerIdIt->get_left();
+		}
+
+		auto client = m_clientRegistry->GetClientByPeer(peerId);
 
 		// handle connection handshake message
 		if (msgType == 1)
@@ -168,7 +323,19 @@ namespace fx
 
 					client->Touch();
 
-					client->SetPeer(peer);
+					client->SetPeer(peerId, GetPeerAddress(peer->address));
+
+					if (g_oneSyncVar->GetValue())
+					{
+						if (client->GetSlotId() == -1)
+						{
+							SendOutOfBand(AddressPair{ peer->host, client->GetAddress() }, "error Not enough client slot IDs.");
+
+							m_clientRegistry->RemoveClient(client);
+
+							return;
+						}
+					}
 
 					if (client->GetNetId() >= 0xFFFF)
 					{
@@ -178,18 +345,37 @@ namespace fx
 					// disable peer throttling
 					enet_peer_throttle_configure(peer, 1000, ENET_PEER_PACKET_THROTTLE_SCALE, 0);
 
+#ifdef _DEBUG
+					enet_peer_timeout(peer, 86400 * 1000, 86400 * 1000, 86400 * 1000);
+#endif
+
 					// send a connectOK
 					net::Buffer outMsg;
 					outMsg.Write(1);
 
 					auto host = m_clientRegistry->GetHost();
 
-					auto outStr = fmt::sprintf(" %d %d %d", client->GetNetId(), (host) ? host->GetNetId() : -1, (host) ? host->GetNetBase() : -1);
+					auto outStr = fmt::sprintf(
+						" %d %d %d %d %lld",
+						client->GetNetId(),
+						(host) ? host->GetNetId() : -1,
+						(host) ? host->GetNetBase() : -1,
+						(g_oneSyncVar->GetValue()) ? client->GetSlotId() : -1,
+						(g_oneSyncVar->GetValue()) ? msec().count() : -1);
+
 					outMsg.Write(outStr.c_str(), outStr.size());
 
 					client->SendPacket(0, outMsg, ENET_PACKET_FLAG_RELIABLE);
 
-					m_clientRegistry->HandleConnectedClient(client);
+					gscomms_execute_callback_on_main_thread([=]()
+					{
+						m_clientRegistry->HandleConnectedClient(client);
+					});
+
+					if (g_oneSyncVar->GetValue())
+					{
+						m_instance->GetComponent<fx::ServerGameState>()->SendObjectIds(client, 64);
+					}
 
 					ForceHeartbeat();
 				}
@@ -204,12 +390,7 @@ namespace fx
 			return;
 		}
 
-		std::vector<std::unique_ptr<se::ScopedPrincipal>> principals;
-
-		for (auto& identifier : client->GetIdentifiers())
-		{
-			principals.emplace_back(std::make_unique<se::ScopedPrincipal>(se::Principal{ fmt::sprintf("identifier.%s", identifier) }));
-		}
+		auto principalScope = client->EnterPrincipalScope();
 
 		if (m_packetHandler)
 		{
@@ -237,6 +418,9 @@ namespace fx
 		{
 			switch (event.type)
 			{
+			case ENET_EVENT_TYPE_CONNECT:
+				m_peerHandles.left.insert({ ++m_basePeerId, event.peer });
+				break;
 			case ENET_EVENT_TYPE_RECEIVE:
 				ProcessPacket(event.peer, event.packet->data, event.packet->dataLength);
 				enet_packet_destroy(event.packet);
@@ -260,6 +444,39 @@ namespace fx
 		}
 
 		m_deferCallbacks.insert({ cbIdx.fetch_add(1), { m_serverTime + inMsec, fn } });
+	}
+
+	void GameServer::CallbackList::Add(const std::function<void()>& fn)
+	{
+		// add to the queue
+		callbacks.push(fn);
+
+		// submit to the owning thread
+		static thread_local nng_socket sockets[2];
+		static thread_local nng_dialer dialers[2];
+
+		int i = m_socketIdx;
+
+		if (!sockets[i])
+		{
+			nng_req0_open(&sockets[i]);
+			nng_dial(sockets[i], m_socketName.c_str(), &dialers[i], 0);
+		}
+
+		std::vector<int> idxList(1);
+		idxList[0] = 0xFEED;
+
+		nng_send(sockets[i], &idxList[0], idxList.size() * sizeof(int), NNG_FLAG_NONBLOCK);
+	}
+
+	void GameServer::CallbackList::Run()
+	{
+		std::function<void()> fn;
+
+		while (callbacks.try_pop(fn))
+		{
+			fn();
+		}
 	}
 
 	void GameServer::ProcessServerFrame(int frameTime)
@@ -327,24 +544,6 @@ namespace fx
 					// find a cached address
 					auto it = m_masterCache.find(masterName);
 
-					if (it == m_masterCache.end())
-					{
-						// look up if not cached
-						auto address = net::PeerAddress::FromString(masterName, 30110, net::PeerAddress::LookupType::ResolveName);
-
-						if (address)
-						{
-							trace("Resolved %s to %s\n", masterName, address->ToString());
-
-							it = m_masterCache.insert({ masterName, *address }).first;
-						}
-						else
-						{
-							// can't look up? unset master
-							master->GetHelper()->SetValue("");
-						}
-					}
-
 					if (it != m_masterCache.end())
 					{
 						// loop through each primary host
@@ -384,7 +583,7 @@ namespace fx
 		// send an out-of-band error to the client
 		if (client->GetPeer())
 		{
-			SendOutOfBand({ client->GetPeer()->host, client->GetAddress() }, fmt::sprintf("error %s", realReason));
+			SendOutOfBand({ m_peerHandles.left.find(client->GetPeer())->get_right()->host, client->GetAddress() }, fmt::sprintf("error %s", realReason));
 		}
 
 		// force a hearbeat
@@ -412,6 +611,17 @@ namespace fx
 			hostBroadcast.Write(0xFFFF);
 
 			Broadcast(hostBroadcast);
+		}
+
+		// signal a drop
+		client->OnDrop();
+
+		{
+			// for name handling, send player state
+			fwRefContainer<ServerEventComponent> events = m_instance->GetComponent<ServerEventComponent>();
+
+			// send every player information about the joining client
+			events->TriggerClientEvent("onPlayerDropped", std::optional<std::string_view>(), client->GetNetId(), client->GetName(), client->GetSlotId());
 		}
 
 		// drop the client
@@ -451,6 +661,38 @@ namespace fx
 		{
 			return new fx::GameServer();
 		}
+
+		struct ThreadWait
+		{
+			ThreadWait()
+			{
+				nng_rep0_open(&m_socket);
+				nng_listen(m_socket, "inproc://main_client", &m_listener, 0);
+			}
+
+			inline void operator()(const fwRefContainer<fx::GameServer>& server, int maxTime)
+			{
+				int rcvFd;
+				nng_getopt_int(m_socket, NNG_OPT_RECVFD, &rcvFd);
+
+				fd_set fds;
+				FD_ZERO(&fds);
+				FD_SET(rcvFd, &fds);
+
+				timeval timeout;
+				timeout.tv_sec = 0;
+				timeout.tv_usec = maxTime * 1000;
+				int rv = select(rcvFd + 1, &fds, nullptr, nullptr, &timeout);
+
+				if (rv >= 0 && FD_ISSET(rcvFd, &fds))
+				{
+					server->InternalRunMainThreadCbs(m_socket);
+				}
+			}
+
+			nng_socket m_socket;
+			nng_listener m_listener;
+		};
 
 		struct ENetWait
 		{
@@ -564,45 +806,50 @@ namespace fx
 
 		struct RconOOB
 		{
-			void Process(const fwRefContainer<fx::GameServer>& server, const AddressPair& from, const std::string_view& data) const
+			void Process(const fwRefContainer<fx::GameServer>& server, const AddressPair& from, const std::string_view& dataView) const
 			{
-				int spacePos = data.find_first_of(" \n");
+				std::string data(dataView);
 
-				auto password = data.substr(0, spacePos);
-				auto command = data.substr(spacePos);
-
-				auto serverPassword = server->GetRconPassword();
-
-				std::string printString;
-
-				PrintListenerContext context([&](const std::string_view& print)
+				gscomms_execute_callback_on_main_thread([=]()
 				{
-					printString += print;
+					int spacePos = data.find_first_of(" \n");
+
+					auto password = data.substr(0, spacePos);
+					auto command = data.substr(spacePos);
+
+					auto serverPassword = server->GetRconPassword();
+
+					std::string printString;
+
+					PrintListenerContext context([&](const std::string_view& print)
+					{
+						printString += print;
+					});
+
+					ScopeDestructor destructor([&]()
+					{
+						server->SendOutOfBand(from, "print " + printString);
+					});
+
+					if (serverPassword.empty())
+					{
+						trace("The server must set rcon_password to be able to use this command.\n");
+						return;
+					}
+
+					if (password != serverPassword)
+					{
+						trace("Invalid password.\n");
+						return;
+					}
+
+					auto ctx = server->GetInstance()->GetComponent<console::Context>();
+					ctx->ExecuteBuffer();
+
+					se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
+					ctx->AddToBuffer(std::string(command));
+					ctx->ExecuteBuffer();
 				});
-
-				ScopeDestructor destructor([&]()
-				{
-					server->SendOutOfBand(from, "print " + printString);
-				});
-
-				if (serverPassword.empty())
-				{
-					trace("The server must set rcon_password to be able to use this command.\n");
-					return;
-				}
-
-				if (password != serverPassword)
-				{
-					trace("Invalid password.\n");
-					return;
-				}
-
-				auto ctx = server->GetInstance()->GetComponent<console::Context>();
-				ctx->ExecuteBuffer();
-
-				se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
-				ctx->AddToBuffer(std::string(command));
-				ctx->ExecuteBuffer();
 			}
 
 			inline const char* GetName() const
@@ -621,6 +868,17 @@ namespace fx
 				std::vector<uint8_t> packetData(packetLength);
 				if (packet.Read(packetData.data(), packetData.size()))
 				{
+					if (targetNetId == 0xFFFF)
+					{
+						// TODO: make this run on the net thread
+						gscomms_execute_callback_on_main_thread([=]()
+						{
+							instance->GetComponent<fx::ServerGameState>()->ParseGameStatePacket(client, packetData);
+						});
+
+						return;
+					}
+
 					auto targetClient = instance->GetComponent<fx::ClientRegistry>()->GetClientByNetID(targetNetId);
 
 					if (targetClient)
@@ -648,6 +906,11 @@ namespace fx
 		{
 			inline static void Handle(ServerInstanceBase* instance, const std::shared_ptr<fx::Client>& client, net::Buffer& packet)
 			{
+				if (g_oneSyncVar->GetValue())
+				{
+					return;
+				}
+
 				auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
 				auto gameServer = instance->GetComponent<fx::GameServer>();
 
@@ -776,12 +1039,15 @@ namespace fx
 		{
 			inline static void Handle(ServerInstanceBase* instance, const std::shared_ptr<fx::Client>& client, net::Buffer& packet)
 			{
-				std::vector<char> reason(packet.GetRemainingBytes());
-				packet.Read(reason.data(), reason.size());
+				gscomms_execute_callback_on_main_thread([=]() mutable
+				{
+					std::vector<char> reason(packet.GetRemainingBytes());
+					packet.Read(reason.data(), reason.size());
 
-				auto gameServer = instance->GetComponent<fx::GameServer>();
+					auto gameServer = instance->GetComponent<fx::GameServer>();
 
-				gameServer->DropClient(client, "%s", reason.data());
+					gameServer->DropClient(client, "%s", reason.data());
+				});
 			}
 
 			inline static constexpr const char* GetPacketId()
@@ -799,6 +1065,37 @@ DECLARE_INSTANCE_TYPE(fx::ServerDecorators::HostVoteCount);
 #include <decorators/WithProcessTick.h>
 #include <decorators/WithPacketHandler.h>
 
+void gscomms_execute_callback_on_main_thread(const std::function<void()>& fn)
+{
+	g_gameServer->InternalAddMainThreadCb(fn);
+}
+
+void gscomms_execute_callback_on_net_thread(const std::function<void()>& fn)
+{
+	g_gameServer->InternalAddNetThreadCb(fn);
+}
+
+void gscomms_reset_peer(int peer)
+{
+	gscomms_execute_callback_on_net_thread([=]()
+	{
+		g_gameServer->InternalResetPeer(peer);
+	});
+}
+
+void gscomms_send_packet(int peer, int channel, const net::Buffer& buffer, ENetPacketFlag flags)
+{
+	gscomms_execute_callback_on_net_thread([=]()
+	{
+		g_gameServer->InternalSendPacket(peer, channel, buffer, flags);
+	});
+}
+
+const ENetPeer* gscomms_get_peer(int peer)
+{
+	return g_gameServer->InternalGetPeer(peer);
+}
+
 static InitFunction initFunction([]()
 {
 	enet_initialize();
@@ -809,7 +1106,7 @@ static InitFunction initFunction([]()
 
 		instance->SetComponent(
 			WithPacketHandler<RoutingPacketHandler, IHostPacketHandler, IQuitPacketHandler, HeHostPacketHandler>(
-				WithProcessTick<ENetWait, GameServerTick>(
+				WithProcessTick<ThreadWait, GameServerTick>(
 					WithOutOfBand<GetInfoOOB, GetStatusOOB, RconOOB>(
 						WithEndPoints(
 							NewGameServer()

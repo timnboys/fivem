@@ -12,30 +12,32 @@
 
 void NUIWindowManager::AddWindow(NUIWindow* window)
 {
-	m_nuiWindowMutex.lock();
+	auto lock = std::unique_lock<std::mutex>(m_nuiWindowMutex);
 	m_nuiWindows.push_back(window);
-	m_nuiWindowMutex.unlock();
 }
 
 void NUIWindowManager::ForAllWindows(std::function<void(fwRefContainer<NUIWindow>)> callback)
 {
-	m_nuiWindowMutex.lock();
+	decltype(m_nuiWindows) windowsCopy;
 
-	for (auto& window : m_nuiWindows)
+	{
+		auto lock = std::unique_lock<std::mutex>(m_nuiWindowMutex);
+		windowsCopy = m_nuiWindows;
+	}
+
+	for (auto& window : windowsCopy)
 	{
 		callback(window);
 	}
-
-	m_nuiWindowMutex.unlock();
 }
 
 void NUIWindowManager::RemoveWindow(NUIWindow* window)
 {
-	m_nuiWindowMutex.lock();
+	auto lock = std::unique_lock<std::mutex>(m_nuiWindowMutex);
 
 	for (auto it = m_nuiWindows.begin(); it != m_nuiWindows.end();)
 	{
-		if (*it == window)
+		if ((*it).GetRef() == window)
 		{
 			it = m_nuiWindows.erase(it);
 		}
@@ -44,8 +46,6 @@ void NUIWindowManager::RemoveWindow(NUIWindow* window)
 			it++;
 		}
 	}
-
-	m_nuiWindowMutex.unlock();
 }
 
 static InitFunction initFunction([] ()

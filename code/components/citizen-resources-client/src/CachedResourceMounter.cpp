@@ -25,6 +25,9 @@
 
 using fx::CachedResourceMounter;
 
+std::unordered_multimap<std::string, std::pair<std::string, std::string>> g_referenceHashList;
+static std::mutex g_referenceHashListMutex;
+
 static std::map<std::string, std::function<void(int, int)>> g_statusCallbacks;
 static std::mutex g_statusCallbacksMutex;
 
@@ -95,7 +98,7 @@ fwRefContainer<fx::Resource> CachedResourceMounter::InitializeLoad(const std::st
 				// and add the entries from the list to the resource
 				for (auto& entry : GetIteratorView(m_resourceEntries.equal_range(host)))
 				{
-					entryList->AddEntry(ResourceCacheEntryList::Entry{ entry.first, entry.second.basename, entry.second.remoteUrl, entry.second.referenceHash, entry.second.size });
+					entryList->AddEntry(ResourceCacheEntryList::Entry{ entry.first, entry.second.basename, entry.second.remoteUrl, entry.second.referenceHash, entry.second.size, entry.second.extData });
 				}
 
 				return resource;
@@ -137,11 +140,6 @@ pplx::task<fwRefContainer<fx::Resource>> CachedResourceMounter::LoadResource(con
 		// verify if we even had an entry called 'resource.rpf'
 		if (entryList->GetEntry("resource.rpf"))
 		{
-			/*if ((entryList->GetEntry("resource.rpf")->referenceHash == "D5541B91516FE7C823B99E261BD8C64D04B24F83" && resource->GetName().find("_new") != std::string::npos))
-			{
-				FatalError("This server has been blacklisted for violating the FiveM Terms of Service. If you manage this server and feel this is not justified, please contact your Technical Account Manager.");
-			}*/
-
 			// follow up by mounting resource.rpf (using the legacy mounter) from the resource on a background thread
 			return pplx::create_task([=]()
 			{
@@ -198,13 +196,29 @@ pplx::task<fwRefContainer<fx::Resource>> CachedResourceMounter::LoadResource(con
 	return pplx::task_from_result(fwRefContainer<fx::Resource>());
 }
 
-void CachedResourceMounter::AddResourceEntry(const std::string& resourceName, const std::string& basename, const std::string& referenceHash, const std::string& remoteUrl, size_t size)
+void CachedResourceMounter::AddResourceEntry(const std::string& resourceName, const std::string& basename, const std::string& referenceHash, const std::string& remoteUrl, size_t size, const std::map<std::string, std::string>& extData)
 {
-	m_resourceEntries.insert({ resourceName, ResourceFileEntry{basename, referenceHash, remoteUrl, size} });
+	{
+		std::unique_lock<std::mutex> g_referenceHashListMutex;
+		g_referenceHashList.insert({ referenceHash, {resourceName, basename} });
+	}
+
+	m_resourceEntries.insert({ resourceName, ResourceFileEntry{basename, referenceHash, remoteUrl, size, extData} });
 }
 
 void CachedResourceMounter::RemoveResourceEntries(const std::string& resourceName)
 {
+	{
+		std::unique_lock<std::mutex> g_referenceHashListMutex;
+
+		auto bits = m_resourceEntries.equal_range(resourceName);
+
+		for (const auto& entry : fx::GetIteratorView(bits))
+		{
+			g_referenceHashList.erase(entry.second.referenceHash);
+		}
+	}
+
 	m_resourceEntries.erase(resourceName);
 }
 

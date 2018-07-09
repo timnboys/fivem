@@ -43,37 +43,6 @@ static void InvokeRender()
 	OnPostFrontendRender();
 }
 
-static void* g_frontendRenderOrig;
-static bool* g_frontendFlag;
-static void(*g_origFrontend)(void*, void*, void*);
-
-static bool g_frontendCalled;
-
-static void** g_curViewport;
-
-static void __fastcall DrawFrontendWrap(void* renderPhase, void* b, void* c)
-{
-	/*if (*g_frontendFlag)
-	{
-		((void(__thiscall*)(void*))g_frontendRenderOrig)(renderPhase);
-	}*/
-
-	g_frontendCalled = true;
-
-	InvokeRender();
-
-	g_origFrontend(renderPhase, b, c);
-}
-
-static void(*g_loadsDoScene)();
-
-static void LoadsDoSceneWrap()
-{
-	InvokeRender();
-
-	g_loadsDoScene();
-}
-
 #pragma comment(lib, "d3d11.lib")
 
 static IDXGISwapChain1* g_swapChain1;
@@ -130,6 +99,7 @@ static HRESULT CreateD3D11DeviceWrap(_In_opt_ IDXGIAdapter* pAdapter, D3D_DRIVER
 		scDesc1.SampleDesc = pSwapChainDesc->SampleDesc;
 		scDesc1.SwapEffect = pSwapChainDesc->SwapEffect;
 
+		/*
 		// probe if DXGI 1.5 is available (Win10 RS1+)
 		WRL::ComPtr<IDXGIFactory5> factory5;
 
@@ -139,6 +109,7 @@ static HRESULT CreateD3D11DeviceWrap(_In_opt_ IDXGIAdapter* pAdapter, D3D_DRIVER
 			scDesc1.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 			g_allowTearing = true;
 		}
+		*/
 
 		g_swapChainFlags = scDesc1.Flags;
 
@@ -317,6 +288,72 @@ static void DisplayD3DCrashMessage(HRESULT hr)
 	FatalError("DirectX encountered an unrecoverable error: %s - %s", ToNarrow(DXGetErrorStringW(hr)), ToNarrow(errorBuffer));
 }
 
+static HRESULT D3DGetData(ID3D11DeviceContext* dc, ID3D11Asynchronous* async, void* data, UINT dataSize, UINT flags)
+{
+	*(int*)data = 1;
+
+	return S_OK;
+}
+
+static void(*g_origPresent)();
+
+void RagePresentWrap()
+{
+	InvokeRender();
+
+	return g_origPresent();
+}
+
+static SRWLOCK g_textureOverridesLock = SRWLOCK_INIT;
+static std::unordered_map<rage::grcTexture*, rage::grcTexture*> g_textureOverrides;
+
+static void(*g_origSetTexture)(void* a1, void* a2, int index, rage::grcTexture* texture);
+
+static void SetTextureHook(void* a1, void* a2, int index, rage::grcTexture* texture)
+{
+	if (texture)
+	{
+		if (!g_textureOverrides.empty())
+		{
+			AcquireSRWLockShared(&g_textureOverridesLock);
+
+			auto it = g_textureOverrides.find(texture);
+
+			if (it != g_textureOverrides.end())
+			{
+				texture = it->second;
+			}
+
+			ReleaseSRWLockShared(&g_textureOverridesLock);
+		}
+	}
+
+	g_origSetTexture(a1, a2, index, texture);
+}
+
+static void(*g_origGrcTextureDtor)(void*);
+
+static void grcTextureDtorHook(rage::grcTexture* self)
+{
+	RemoveTextureOverride(self);
+
+	g_origGrcTextureDtor(self);
+}
+
+void AddTextureOverride(rage::grcTexture* orig, rage::grcTexture* repl)
+{
+	AcquireSRWLockExclusive(&g_textureOverridesLock);
+	g_textureOverrides[orig] = repl;
+	ReleaseSRWLockExclusive(&g_textureOverridesLock);
+}
+
+void RemoveTextureOverride(rage::grcTexture* orig)
+{
+	AcquireSRWLockExclusive(&g_textureOverridesLock);
+	g_textureOverrides.erase(orig);
+	ReleaseSRWLockExclusive(&g_textureOverridesLock);
+}
+
 static HookFunction hookFunction([] ()
 {
 	static ConVar<bool> disableRenderingCvar("r_disableRendering", ConVar_None, false, &g_disableRendering);
@@ -327,15 +364,12 @@ static HookFunction hookFunction([] ()
 	hook::set_call(&g_origCreateCB, ptrFunc);
 	hook::call(ptrFunc, InvokeCreateCB);
 
-	// frontend render
-	char* vtablePtrLoc = hook::pattern("41 B9 10 00 00 00 C6 44 24 28 00 48 8B D9").count(1).get(0).get<char>(28);
-	void* vtablePtr = (void*)(*(int32_t*)vtablePtrLoc + vtablePtrLoc + 4);
-
-	//g_frontendRenderOrig = ((void**)vtablePtr)[24 / 4];
-	//((void**)vtablePtr)[24 / 4] = DrawFrontendWrap;
-
-	hook::set_call(&g_origFrontend, ((uintptr_t*)vtablePtr)[2] + 0xAB);
-	hook::call(((uintptr_t*)vtablePtr)[2] + 0xAB, DrawFrontendWrap);
+	// end scene
+	{
+		auto location = hook::get_pattern("48 0F 45 C8 48 83 C4 40 5B E9 00 00 00 00", 9);
+		hook::set_call(&g_origPresent, location);
+		hook::jump(location, RagePresentWrap);
+	}
 
 	//ptrFunc = hook::pattern("83 64 24 28 00 41 B0 01 C6 44 24 20 01 41 8A C8").count(1).get(0).get<void>(-30);
 	//hook::set_call(&g_origEndScene, ptrFunc);
@@ -344,15 +378,6 @@ static HookFunction hookFunction([] ()
 	ptrFunc = hook::get_pattern("41 83 F9 01 75 34 48 83 C4 28 E9", 10);
 	hook::set_call(&g_origRunGame, ptrFunc);
 	hook::jump(ptrFunc, RunGameWrap);
-
-	ptrFunc = hook::pattern("EB 0E 80 3D ? ? ? ? 00 74 05 E8").count(1).get(0).get<void>(55);
-	hook::set_call(&g_loadsDoScene, ptrFunc);
-	hook::call(ptrFunc, LoadsDoSceneWrap);
-
-	// get 'current viewport' variable
-	char* location = hook::pattern("57 48 83 EC 20 83 3D ? ? ? ? 00 48 8B 3D ? ? ? ?").count(1).get(0).get<char>(15);
-
-	g_curViewport = (void**)(location + *(int32_t*)location + 4);
 
 	// set the present hook
 	if (IsWindows10OrGreater())
@@ -410,4 +435,17 @@ static HookFunction hookFunction([] ()
 	auto loc = hook::get_pattern<char>("75 0A B9 06 BD F7 9C E8");
 	hook::nop(loc + 2, 5);
 	hook::call(loc + 7, DisplayD3DCrashMessage);
+
+	// texture overrides
+	MH_Initialize();
+	MH_CreateHook(hook::get_pattern("C8 08 74 05 4C 89 4C C8 08 65 48 8B 0C 25", -0x15), SetTextureHook, (void**)&g_origSetTexture);
+	MH_CreateHook(hook::get_pattern("48 8B D9 48 89 01 48 8B 49 28 E8 ? ? ? ? 48 8D", -0xD), grcTextureDtorHook, (void**)&g_origGrcTextureDtor);
+	MH_EnableHook(MH_ALL_HOOKS);
+
+	// query GetData, always return 1 (why even wait for presentation with a really weird Sleep loop?)
+	{
+		//auto location = hook::get_pattern("48 8B 01 8B FE FF 90 E8 00 00 00", 5);
+		//hook::nop(location, 6);
+		//hook::call(location, D3DGetData);
+	}
 });

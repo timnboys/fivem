@@ -38,7 +38,7 @@
 	url = http://git.tukaani.org/xz.git
 [submodule "vendor/curl"]
 	path = vendor/curl
-	url = https://github.com/bagder/curl.git
+	url = https://github.com/citizenfx/curl.git
 [submodule "vendor/leveldb"]
 	path = vendor/leveldb
 	url = https://github.com/citizenfx/leveldb.git
@@ -76,3 +76,27 @@
 [submodule "vendor/linenoise-ng"]
 	path = vendor/linenoise-ng
 	url = https://github.com/arangodb/linenoise-ng.git
+[submodule "vendor/discord-rpc"]
+	path = vendor/discord-rpc
+	url = https://github.com/discordapp/discord-rpc.git
+[submodule "vendor/lz4"]
+	path = vendor/lz4
+	url = https://github.com/lz4/lz4.git
+[submodule "vendor/nng"]
+	path = vendor/nng
+	url = https://github.com/nanomsg/nng.git
+[submodule "vendor/node"]
+	path = vendor/node
+	url = https://github.com/citizenfx/node.git
+[submodule "vendor/openssl"]
+	path = vendor/openssl
+	url = https://github.com/openssl/openssl.git
+[submodule "vendor/libopus"]
+	path = vendor/libopus
+	url = https://github.com/xiph/opus.git
+[submodule "vendor/libfvad"]
+	path = vendor/libfvad
+	url = https://github.com/dpirch/libfvad.git
+[submodule "vendor/webrtc-audio-processing"]
+	path = vendor/webrtc-audio-processing
+	url = https://github.com/citizenfx/webrtc-audio-processing.git

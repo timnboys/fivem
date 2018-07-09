@@ -17,7 +17,7 @@
 class NUIClient : public CefClient, public CefLifeSpanHandler, public CefDisplayHandler, public CefContextMenuHandler, public CefLoadHandler, public CefRequestHandler
 {
 private:
-	fwRefContainer<NUIWindow> m_window;
+	NUIWindow* m_window;
 	bool m_windowValid;
 
 	std::recursive_mutex m_windowLock;
@@ -29,7 +29,7 @@ private:
 public:
 	NUIClient(NUIWindow* window);
 
-	inline NUIWindow*	GetWindow()					{ return m_window.GetRef();		}
+	inline NUIWindow*	GetWindow()					{ return m_window;		}
 	inline CefBrowser*	GetBrowser()				{ return m_browser.get();		}
 
 	inline bool			GetWindowValid()			{ return m_windowValid;			}
@@ -80,7 +80,7 @@ protected:
 
 // CefDisplayHandler
 protected:
-	virtual bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, const CefString& message, const CefString& source, int line) override;
+	virtual bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString& message, const CefString& source, int line) override;
 
 // CefRequestHandler
 protected:

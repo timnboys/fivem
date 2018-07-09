@@ -17,6 +17,9 @@ pushd ..\cfx-ui\
 :: install npm stuff
 call npm i
 
+:: build the worker
+call node_modules\.bin\webpack.cmd --config=worker.config.js
+
 :: ng build
 call node_modules\.bin\ng.cmd build --prod --output-hashing none
 
@@ -26,6 +29,9 @@ rmdir /s /q %UIRoot%\app\
 :: copy new app
 mkdir %UIRoot%\app\
 copy /y dist\*.* %UIRoot%\app\
+
+mkdir %UIRoot%\app\assets\
+copy /y dist\assets\*.json %UIRoot%\app\assets\
 
 :: pop directory
 popd

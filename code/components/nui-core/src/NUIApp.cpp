@@ -32,6 +32,12 @@ bool NUIApp::GetLocalizedString(int messageID, CefString& string)
 	return true;
 }
 
+void NUIApp::OnContextInitialized()
+{
+	auto manager = CefCookieManager::GetGlobalManager(nullptr);
+	manager->SetSupportedSchemes({ "nui" }, nullptr);
+}
+
 void NUIApp::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context)
 {
 	CefRefPtr<CefV8Value> window = context->GetGlobal();
@@ -44,21 +50,28 @@ void NUIApp::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 void NUIApp::OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line)
 {
 	command_line->AppendSwitch("enable-experimental-web-platform-features");
-	command_line->AppendSwitch("in-process-gpu");
 	command_line->AppendSwitch("enable-media-stream");
 	command_line->AppendSwitch("use-fake-ui-for-media-stream");
 	command_line->AppendSwitch("enable-speech-input");
 	command_line->AppendSwitch("ignore-gpu-blacklist");
 	command_line->AppendSwitch("enable-usermedia-screen-capture");
+	command_line->AppendSwitch("disable-direct-composition");
 	command_line->AppendSwitchWithValue("default-encoding", "utf-8");
+	//command_line->AppendSwitch("disable-gpu-vsync");
+	command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
+	command_line->AppendSwitch("force-gpu-rasterization");
 
-	if (IsWindows10OrGreater())
-	{
-		// this is broken pending https://crbug.com/480361
-		// (WasResized breaks internal ANGLE/cc state, causing Alt-Enter to 'break' NUI)
-		//command_line->AppendSwitch("disable-gpu-vsync");
-		command_line->AppendSwitch("force-gpu-rasterization");
-	}
+	// some GPUs are in the GPU blacklist as 'forcing D3D9'
+	// this just forces D3D11 anyway.
+	command_line->AppendSwitchWithValue("use-angle", "d3d11");
+
+	// M65 enables these by default, but CEF doesn't pass the required phase data at this time (2018-03-31)
+	// this breaks scrolling 'randomly' - after a middle click, and some other scenarios
+	command_line->AppendSwitchWithValue("disable-features", "TouchpadAndWheelScrollLatching,AsyncWheelEvents");
+
+	// M66 enables this by default, this breaks scrolling in iframes, however only in the Cfx embedder scenario (2018-03-31)
+	// cefclient is not affected, code was compared with cefclient but not that different.
+	command_line->AppendSwitchWithValue("disable-blink-features", "RootLayerScrolling");
 }
 
 bool NUIApp::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefProcessId source_process, CefRefPtr<CefProcessMessage> message)

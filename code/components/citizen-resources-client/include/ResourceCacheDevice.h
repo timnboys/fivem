@@ -37,14 +37,15 @@ public:
 		std::string remoteUrl;
 		std::string referenceHash;
 		size_t size;
+		std::map<std::string, std::string> extData;
 
 		inline Entry()
 		{
 
 		}
 
-		inline Entry(const std::string& resourceName, const std::string& basename, const std::string& remoteUrl, const std::string& referenceHash, size_t size)
-			: resourceName(resourceName), basename(basename), remoteUrl(remoteUrl), referenceHash(referenceHash), size(size)
+		inline Entry(const std::string& resourceName, const std::string& basename, const std::string& remoteUrl, const std::string& referenceHash, size_t size, const std::map<std::string, std::string>& extData = {})
+			: resourceName(resourceName), basename(basename), remoteUrl(remoteUrl), referenceHash(referenceHash), size(size), extData(extData)
 		{
 
 		}
@@ -92,10 +93,16 @@ class
 #endif
 	ResourceCacheDevice : public vfs::Device
 {
-protected:
-	struct HandleData
+public:
+	struct FileData
 	{
-		enum
+		HANDLE eventHandle;
+
+		std::mutex fetchLock;
+
+		std::map<std::string, std::string> metaData;
+
+		enum Status
 		{
 			StatusEmpty,
 			StatusNotFetched,
@@ -104,6 +111,25 @@ protected:
 			StatusError
 		} status;
 
+		char rscHeader[4];
+
+		inline FileData()
+			: status(StatusEmpty)
+		{
+			eventHandle = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+
+			rscHeader[0] = rscHeader[1] = rscHeader[2] = rscHeader[3] = 0;
+		}
+
+		inline ~FileData()
+		{
+			CloseHandle(eventHandle);
+		}
+	};
+
+protected:
+	struct HandleData
+	{
 		fwRefContainer<vfs::Device> parentDevice;
 
 		vfs::Device::THandle parentHandle;
@@ -113,17 +139,16 @@ protected:
 		ResourceCacheEntryList::Entry entry;
 
 		bool bulkHandle;
-
-		std::map<std::string, std::string> metaData;
-
-		std::mutex lockMutex;
-		std::condition_variable lockVar;
+		bool allocated;
 
 		size_t downloadProgress;
 		size_t downloadSize;
 
+		HttpRequestPtr getRequest;
+		std::shared_ptr<FileData> fileData;
+
 		inline HandleData()
-			: status(StatusEmpty), parentHandle(vfs::Device::InvalidHandle), downloadProgress(0), downloadSize(0)
+			: parentHandle(vfs::Device::InvalidHandle), downloadProgress(0), downloadSize(0), allocated(false)
 		{
 
 		}
@@ -158,7 +183,7 @@ protected:
 
 	bool EnsureFetched(HandleData* handleData);
 
-	virtual void AddEntryToCache(const std::string& outFileName, std::map<std::string, std::string>& metaData, HandleData* handleData);
+	virtual void AddEntryToCache(const std::string& outFileName, std::map<std::string, std::string>& metaData, const ResourceCacheEntryList::Entry& entryRef);
 
 	virtual void MarkFetched(HandleData* handleData);
 
@@ -193,4 +218,8 @@ public:
 	virtual size_t GetLength(THandle handle) override;
 
 	virtual size_t GetLength(const std::string& fileName) override;
+
+	virtual uint32_t GetAttributes(const std::string& filename) override;
+
+	virtual bool ExtensionCtl(int controlIdx, void* controlData, size_t controlSize) override;
 };

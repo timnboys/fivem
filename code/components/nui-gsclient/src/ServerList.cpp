@@ -163,13 +163,12 @@ static struct
 {
 	SOCKET socket;
 	SOCKET socket6;
-	gameserveritemext_t servers[8192];
-	int numServers;
+
+	// the list relies on sorting, so using a concurrent_unordered_map won't work
+	std::recursive_mutex serversMutex;
+	std::map<std::tuple<int, net::PeerAddress>, std::shared_ptr<gameserveritemext_t>> queryServers;
+	std::map<net::PeerAddress, std::shared_ptr<gameserveritemext_t>> servers;
 	DWORD lastQueryStep;
-
-	int curNumResults;
-
-	DWORD queryTime;
 
 	bool isOneQuery;
 	net::PeerAddress oneQueryAddress;
@@ -247,28 +246,16 @@ bool GSClient_Init()
 	return true;
 }
 
-gameserveritemext_t* GSClient_ServerItem(int i)
+void GSClient_QueryServer(gameserveritemext_t& server)
 {
-	return &g_cls.servers[i];
-}
+	server.queried = true;
+	server.responded = false;
+	server.queryTime = timeGetTime();
 
-int GSClient_NumServers()
-{
-	return g_cls.numServers;
-}
+	const sockaddr* addr = server.m_Address.GetSocketAddress();
+	int addrlen = server.m_Address.GetSocketAddressLength();
 
-void GSClient_QueryServer(int i)
-{
-	gameserveritemext_t* server = &g_cls.servers[i];
-
-	server->queried = true;
-	server->responded = false;
-	server->queryTime = timeGetTime();
-
-	const sockaddr* addr = server->m_Address.GetSocketAddress();
-	int addrlen = server->m_Address.GetSocketAddressLength();
-
-	auto socket = (server->m_Address.GetAddressFamily() == AF_INET6) ? g_cls.socket6 : g_cls.socket;
+	auto socket = (server.m_Address.GetAddressFamily() == AF_INET6) ? g_cls.socket6 : g_cls.socket;
 	
 	char message[128];
 	_snprintf(message, sizeof(message), "\xFF\xFF\xFF\xFFgetinfo xxx");
@@ -278,7 +265,7 @@ void GSClient_QueryServer(int i)
 
 void GSClient_QueryStep()
 {
-	if ((GetTickCount() - g_cls.lastQueryStep) < 50)
+	if ((GetTickCount() - g_cls.lastQueryStep) < 75)
 	{
 		return;
 	}
@@ -287,12 +274,17 @@ void GSClient_QueryStep()
 
 	int count = 0;
 
-	for (int i = 0; i < g_cls.numServers && count < 20; i++)
+	std::unique_lock<std::recursive_mutex> lock(g_cls.serversMutex);
+
+	for (auto& serverPair : g_cls.queryServers)
 	{
-		if (!g_cls.servers[i].queried)
+		if (!serverPair.second->queried)
 		{
-			GSClient_QueryServer(i);
-			count++;
+			if (count < 100)
+			{
+				GSClient_QueryServer(*serverPair.second);
+				count++;
+			}
 		}
 	}
 }
@@ -376,21 +368,16 @@ void replaceAll(std::string& str, const std::string& from, const std::string& to
 
 void GSClient_HandleInfoResponse(const char* bufferx, int len, const net::PeerAddress& from)
 {
-	auto tempServer = std::make_shared<gameserveritemext_t>();
-	tempServer->queryTime = timeGetTime();
-	tempServer->m_Address = from;
+	std::shared_ptr<gameserveritemext_t> server;
 
-	gameserveritemext_t* server = tempServer.get();
-
-	for (int i = 0; i < g_cls.numServers; i++)
 	{
-		gameserveritemext_t* thisServer = &g_cls.servers[i];
+		std::unique_lock<std::recursive_mutex> lock(g_cls.serversMutex);
+		server = g_cls.servers[from];
+	}
 
-		if (thisServer->m_Address == from)
-		{
-			server = thisServer;
-			break;
-		}
+	if (!server)
+	{
+		return;
 	}
 
 	bufferx++;
@@ -398,21 +385,12 @@ void GSClient_HandleInfoResponse(const char* bufferx, int len, const net::PeerAd
 	char buffer[8192];
 	strcpy(buffer, bufferx);
 
-	g_cls.queryTime = timeGetTime();
-
-	if (g_cls.curNumResults > 8192)
-	{
-		return;
-	}
-
-	int j = g_cls.curNumResults;
-
-	g_cls.curNumResults++;
-
 	server->m_ping = timeGetTime() - server->queryTime;
 	server->m_maxClients = atoi(Info_ValueForKey(buffer, "sv_maxclients"));
 	server->m_clients = atoi(Info_ValueForKey(buffer, "clients"));
 	server->m_hostName = Info_ValueForKey(buffer, "hostname");
+
+	server->responded = true;
 
 	replaceAll(server->m_hostName, "'", "\\'");
 
@@ -444,38 +422,6 @@ void GSClient_HandleInfoResponse(const char* bufferx, int len, const net::PeerAd
 		rapidjson::Document doc;
 		doc.Parse(infoBlobJson.c_str(), infoBlobJson.size());
 
-		bool hasHardCap = true;
-
-		auto it = doc.FindMember("resources");
-
-		if (it != doc.MemberEnd())
-		{
-			auto& value = it->value;
-
-			if (value.IsArray())
-			{
-				hasHardCap = false;
-
-				for (auto i = value.Begin(); i != value.End(); ++i)
-				{
-					if (i->IsString())
-					{
-						if (strcmp(i->GetString(), "hardcap") == 0)
-						{
-							hasHardCap = true;
-						}
-					}
-				}
-			}
-		}
-
-		if (!hasHardCap)
-		{
-			server->m_clients = 0;
-			server->m_ping = 404;
-			server->m_hostName += " [BROKEN, DO NOT JOIN - ERROR CODE #53]";
-		}
-
 		bool isThisOneQuery = (g_cls.isOneQuery && from == g_cls.oneQueryAddress);
 
 		nui::ExecuteRootScript(fmt::sprintf("citFrames['mpMenu'].contentWindow.postMessage({ type: '%s', name: '%s',"
@@ -496,11 +442,9 @@ void GSClient_HandleInfoResponse(const char* bufferx, int len, const net::PeerAd
 			g_cls.isOneQuery = false;
 			g_cls.oneQueryAddress = net::PeerAddress();
 		}
-
-		tempServer->m_Address = net::PeerAddress();
 	};
 
-	if (infoBlobVersionString && infoBlobVersionString[0])
+	if (g_cls.isOneQuery && infoBlobVersionString && infoBlobVersionString[0])
 	{
 		std::string serverId = fmt::sprintf("%s", addressStr);
 		int infoBlobVersion = atoi(infoBlobVersionString);
@@ -511,12 +455,6 @@ void GSClient_HandleInfoResponse(const char* bufferx, int len, const net::PeerAd
 	{
 		onLoadCB("{}");
 	}
-
-	// have over 60% of servers been shown?
-	if (g_cls.curNumResults >= (g_cls.numServers * 0.6))
-	{
-		nui::ExecuteRootScript("citFrames['mpMenu'].contentWindow.postMessage({ type: 'refreshingDone' }, '*');");
-	}
 }
 
 typedef struct
@@ -525,91 +463,11 @@ typedef struct
 	unsigned short port;
 } serverAddress_t;
 
-#if 0
-void GSClient_HandleServersResponse(const char* buffer, int len)
-{
-	int numservers = 0;
-	const char* buffptr = buffer;
-	const char* buffend = buffer + len;
-	serverAddress_t addresses[256];
-	while (buffptr + 1 < buffend)
-	{
-		// advance to initial token
-		do
-		{
-			if (*buffptr++ == '\\')
-				break;
-		} while (buffptr < buffend);
-
-		if (buffptr >= buffend - 8)
-		{
-			break;
-		}
-
-		// parse out ip
-		addresses[numservers].ip[0] = *buffptr++;
-		addresses[numservers].ip[1] = *buffptr++;
-		addresses[numservers].ip[2] = *buffptr++;
-		addresses[numservers].ip[3] = *buffptr++;
-
-		// parse out port
-		addresses[numservers].port = (*(buffptr++)) << 8;
-		addresses[numservers].port += (*(buffptr++)) & 0xFF;
-		addresses[numservers].port = addresses[numservers].port;
-
-		// syntax check
-		if (*buffptr != '\\')
-		{
-			break;
-		}
-
-		numservers++;
-		if (numservers >= 256)
-		{
-			break;
-		}
-
-		// parse out EOT
-		if (buffptr[1] == 'E' && buffptr[2] == 'O' && buffptr[3] == 'T')
-		{
-			break;
-		}
-	}
-
-	int count = g_cls.numServers;
-	int max = 8192;
-
-	for (int i = 0; i < numservers && count < max; i++)
-	{
-		// build net address
-		unsigned int ip = (addresses[i].ip[0] << 24) | (addresses[i].ip[1] << 16) | (addresses[i].ip[2] << 8) | (addresses[i].ip[3]);
-		//g_cls.servers[count].m_NetAdr.Init(ip, addresses[i].qport, addresses[i].port);
-		g_cls.servers[count].m_IP = ip;
-		g_cls.servers[count].m_Port = addresses[i].port;
-		g_cls.servers[count].queried = false;
-
-		count++;
-	}
-
-	g_cls.queryTime = timeGetTime();
-	GSClient_QueryStep();
-
-	g_cls.numServers = count;
-}
-#endif
-
 #define CMD_GSR "getserversResponse"
 #define CMD_INFO "infoResponse"
 
 void GSClient_HandleOOB(const char* buffer, size_t len, const net::PeerAddress& from)
 {
-#if 0
-	if (!_strnicmp(buffer, CMD_GSR, strlen(CMD_GSR)))
-	{
-		GSClient_HandleServersResponse(&buffer[strlen(CMD_GSR)], len - strlen(CMD_GSR));
-	}
-#endif
-
 	if (!_strnicmp(buffer, CMD_INFO, strlen(CMD_INFO)))
 	{
 		GSClient_HandleInfoResponse(&buffer[strlen(CMD_INFO)], len - strlen(CMD_INFO), from);
@@ -669,12 +527,6 @@ void GSClient_QueryMaster()
 	static bool lookedUp;
 	static sockaddr_in masterIP;
 
-	g_cls.queryTime = timeGetTime() + 15000;//(0xFFFFFFFF - 50000);
-
-	g_cls.numServers = 0;
-
-	g_cls.curNumResults = 0;
-
 	char message[128];
 	_snprintf(message, sizeof(message), "\xFF\xFF\xFF\xFFgetservers " GS_GAMENAME " 4 full empty");
 
@@ -710,24 +562,15 @@ void GSClient_QueryAddresses(const TContainer& addrs)
 		GSClient_Init();
 	}
 
-	g_cls.numServers = 0;
-	g_cls.curNumResults = 0;
-
-	char message[128];
-	_snprintf(message, sizeof(message), "\xFF\xFF\xFF\xFFgetinfo xxx");
-
-	for (const net::PeerAddress& na : addrs)
+	for (const auto& na : addrs)
 	{
-		int count = g_cls.numServers;
+		auto server = std::make_shared<gameserveritemext_t>();
+		server->queried = false;
+		server->m_Address = std::get<net::PeerAddress>(na);
 
-		if (count < 8192)
-		{
-			// build net address
-			g_cls.servers[count].m_Address = na;
-			g_cls.servers[count].queried = false;
-			
-			g_cls.numServers++;
-		}
+		std::unique_lock<std::recursive_mutex> lock(g_cls.serversMutex);
+		g_cls.queryServers[na] = server;
+		g_cls.servers[server->m_Address] = server;
 	}
 }
 
@@ -739,7 +582,7 @@ void GSClient_QueryOneServer(const std::wstring& arg)
 	{
 		g_cls.isOneQuery = true;
 		g_cls.oneQueryAddress = peerAddress.get();
-		GSClient_QueryAddresses(std::vector<net::PeerAddress>{ peerAddress.get() });
+		GSClient_QueryAddresses(std::vector<std::tuple<int, net::PeerAddress>>{ { 0, peerAddress.get() } });
 	}
 	else
 	{
@@ -766,7 +609,7 @@ void GSClient_Ping(const std::wstring& arg)
 		return;
 	}
 
-	std::vector<net::PeerAddress> addresses;
+	std::vector<std::tuple<int, net::PeerAddress>> addresses;
 
 	for (auto it = doc.Begin(); it != doc.End(); it++)
 	{
@@ -775,13 +618,25 @@ void GSClient_Ping(const std::wstring& arg)
 			continue;
 		}
 
-		if (it->Size() != 2)
+		if (it->Size() != 2 && it->Size() != 3)
 		{
 			continue;
 		}
 
 		auto& addrVal = (*it)[0];
 		auto& portVal = (*it)[1];
+
+		auto weight = 0;
+
+		if (it->Size() == 3)
+		{
+			auto& weightVal = (*it)[2];
+
+			if (weightVal.IsInt())
+			{
+				weight = weightVal.GetInt();
+			}
+		}
 
 		if (!addrVal.IsString() || !portVal.IsInt())
 		{
@@ -792,7 +647,7 @@ void GSClient_Ping(const std::wstring& arg)
 		auto port = portVal.GetInt();
 
 		auto netAddr = net::PeerAddress::FromString(addr, port);
-		addresses.push_back(netAddr.get());
+		addresses.push_back({ 1000 - weight, netAddr.get() });
 	}
 
 	GSClient_QueryAddresses(addresses);
@@ -830,8 +685,6 @@ static InitFunction initFunction([] ()
 
 		if (!_wcsicmp(type, L"pingServers"))
 		{
-			trace("Pinging specified servers...\n");
-
 			GSClient_Ping(arg);
 		}
 

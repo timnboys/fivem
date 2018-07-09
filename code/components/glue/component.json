@@ -6,7 +6,9 @@
 		"net",
 		"nui:core",
 		"gta:core",
-		"conhost"
+		"conhost",
+		"vendor:cpp-uri",
+		"vendor:nng"
 	],
 	"provides": []
 }

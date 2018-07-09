@@ -158,6 +158,11 @@ static void ScanResources(fx::ServerInstanceBase* instance)
 	}
 
 	pplx::when_all(tasks.begin(), tasks.end()).wait();
+
+	instance
+		->GetComponent<fx::ResourceManager>()
+		->GetComponent<fx::ResourceEventManagerComponent>()
+		->TriggerEvent2("onResourceListRefresh", {});
 }
 
 static InitFunction initFunction([]()
@@ -179,6 +184,16 @@ static InitFunction initFunction([]()
 			
 			resource->OnStart.Connect([=]()
 			{
+				trace("Started resource %s\n", resource->GetName());
+
+				auto metaData = resource->GetComponent<fx::ResourceMetaDataComponent>();
+				auto iv = metaData->GetEntries("server_only");
+
+				if (iv.begin() != iv.end())
+				{
+					return;
+				}
+
 				auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
 
 				net::Buffer outBuffer;
@@ -189,13 +204,19 @@ static InitFunction initFunction([]()
 				{
 					client->SendPacket(0, outBuffer, ENET_PACKET_FLAG_RELIABLE);
 				});
-
-				trace("Started resource %s\n", resource->GetName());
-			}, 1000);
+			}, 99999999);
 
 			resource->OnStop.Connect([=]()
 			{
 				trace("Stopping resource %s\n", resource->GetName());
+
+				auto metaData = resource->GetComponent<fx::ResourceMetaDataComponent>();
+				auto iv = metaData->GetEntries("server_only");
+
+				if (iv.begin() != iv.end())
+				{
+					return;
+				}
 
 				auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
 
@@ -610,10 +631,5 @@ static InitFunction initFunction2([]()
 
 		// set variable
 		consoleContext->ExecuteSingleCommandDirect(ProgramArguments{ "set", context.CheckArgument<const char*>(0), context.CheckArgument<const char*>(1) });
-	});
-
-	fx::ScriptEngine::RegisterNativeHandler("IS_ACE_ALLOWED", [](fx::ScriptContext& context)
-	{
-		context.SetResult(seCheckPrivilege(context.CheckArgument<const char*>(0)));
 	});
 });

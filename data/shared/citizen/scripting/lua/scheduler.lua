@@ -44,6 +44,8 @@ function Citizen.CreateThreadNow(threadFunction)
 	if resumedThread and coroutine.status(coro) ~= 'dead' then
 		table.insert(threads, t)
 	end
+
+	return coroutine.status(coro) ~= 'dead'
 end
 
 function Citizen.Await(promise)
@@ -73,6 +75,10 @@ function Citizen.Await(promise)
 		end
 
 		return result
+	end, function (err)
+		if err then
+			Citizen.Trace('Await failure: ' .. debug.traceback(resumableThread.coroutine, err, 2))
+		end
 	end)
 
 	curThread = nil
@@ -127,9 +133,11 @@ local alwaysSafeEvents = {
 }
 
 local eventHandlers = {}
+local deserializingNetEvent = false
 
 Citizen.SetEventRoutine(function(eventName, eventPayload, eventSource)
 	-- set the event source
+	local lastSource = _G.source
 	_G.source = eventSource
 
 	-- try finding an event handler for the event
@@ -144,6 +152,7 @@ Citizen.SetEventRoutine(function(eventName, eventPayload, eventSource)
 				return
 			end
 
+			deserializingNetEvent = { source = eventSource }
 			_G.source = tonumber(eventSource:sub(5))
 		end
 
@@ -155,6 +164,9 @@ Citizen.SetEventRoutine(function(eventName, eventPayload, eventSource)
 			data = {}
 		end
 
+		-- reset serialization
+		deserializingNetEvent = nil
+
 		-- if this is a table...
 		if type(data) == 'table' then
 			-- loop through all the event handlers
@@ -165,6 +177,8 @@ Citizen.SetEventRoutine(function(eventName, eventPayload, eventSource)
 			end
 		end
 	end
+
+	_G.source = lastSource
 end)
 
 local eventKey = 10
@@ -314,7 +328,37 @@ Citizen.SetCallRefRoutine(function(refId, argsSerialized)
 		return msgpack.pack({})
 	end
 
-	return msgpack.pack({ ref(table.unpack(msgpack.unpack(argsSerialized))) })
+	local err
+	local retvals
+	local cb = {}
+
+	local waited = Citizen.CreateThreadNow(function()
+		local status, result, error = xpcall(function()
+			retvals = { ref(table.unpack(msgpack.unpack(argsSerialized))) }
+		end, debug.traceback)
+
+		if not status then
+			err = result
+		end
+
+		if cb.cb then
+			cb.cb(retvals or false, err)
+		end
+	end)
+
+	if not waited then
+		if err then
+			error(err)
+		end
+
+		return msgpack.pack(retvals)
+	else
+		return msgpack.pack({{
+			__cfx_async_retval = function(rvcb)
+				cb.cb = rvcb
+			end
+		}})
+	end
 end)
 
 Citizen.SetDuplicateRefRoutine(function(refId)
@@ -337,6 +381,7 @@ Citizen.SetDeleteRefRoutine(function(refId)
 end)
 
 local EXT_FUNCREF = 10
+local EXT_LOCALFUNCREF = 11
 
 msgpack.packers['funcref'] = function(buffer, ref)
 	msgpack.packers['ext'](buffer, EXT_FUNCREF, ref)
@@ -355,6 +400,144 @@ msgpack.packers['function'] = function(buffer, func)
 	msgpack.packers['funcref'](buffer, MakeFunctionReference(func))
 end
 
+-- RPC REQUEST HANDLER
+local InvokeRpcEvent
+
+if GetCurrentResourceName() == 'sessionmanager' then
+	local rpcEvName = ('__cfx_rpcReq')
+
+	RegisterNetEvent(rpcEvName)
+
+	AddEventHandler(rpcEvName, function(retEvent, retId, refId, args)
+		local source = source
+
+		local eventTriggerFn = TriggerServerEvent
+		
+		if IsDuplicityVersion() then
+			eventTriggerFn = function(name, ...)
+				TriggerClientEvent(name, source, ...)
+			end
+		end
+
+		local returnEvent = function(args, err)
+			eventTriggerFn(retEvent, retId, args, err)
+		end
+
+		local function makeArgRefs(o)
+			if type(o) == 'table' then
+				for k, v in pairs(o) do
+					if type(v) == 'table' and rawget(v, '__cfx_functionReference') then
+						o[k] = function(...)
+							return InvokeRpcEvent(source, rawget(v, '__cfx_functionReference'), {...})
+						end
+					end
+
+					makeArgRefs(v)
+				end
+			end
+		end
+
+		makeArgRefs(args)
+
+		local payload = Citizen.InvokeFunctionReference(refId, msgpack.pack(args))
+
+		if #payload == 0 then
+			returnEvent(false, 'err')
+			return
+		end
+
+		local rvs = msgpack.unpack(payload)
+
+		if type(rvs[1]) == 'table' and rvs[1].__cfx_async_retval then
+			rvs[1].__cfx_async_retval(returnEvent)
+		else
+			returnEvent(rvs)
+		end
+	end)
+end
+
+local rpcId = 0
+local rpcPromises = {}
+local playerPromises = {}
+
+-- RPC REPLY HANDLER
+local repName = ('__cfx_rpcRep:%s'):format(GetCurrentResourceName())
+
+RegisterNetEvent(repName)
+
+AddEventHandler(repName, function(retId, args, err)
+	local promise = rpcPromises[retId]
+	rpcPromises[retId] = nil
+
+	-- remove any player promise for us
+	for k, v in pairs(playerPromises) do
+		v[retId] = nil
+	end
+
+	if promise then
+		if args then
+			promise:resolve(args[1])
+		elseif err then
+			promise:reject(err)
+		end
+	end
+end)
+
+if IsDuplicityVersion() then
+	AddEventHandler('playerDropped', function(reason)
+		local source = source
+
+		if playerPromises[source] then
+			for k, v in pairs(playerPromises[source]) do
+				local p = rpcPromises[k]
+
+				if p then
+					p:reject('Player dropped: ' .. reason)
+				end
+			end
+		end
+
+		playerPromises[source] = nil
+	end)
+end
+
+-- RPC INVOCATION
+InvokeRpcEvent = function(source, ref, args)
+	if not curThread then
+		error('RPC delegates can only be invoked from a thread.')
+	end
+
+	local src = source
+
+	local eventTriggerFn = TriggerServerEvent
+
+	if IsDuplicityVersion() then
+		eventTriggerFn = function(name, ...)
+			TriggerClientEvent(name, src, ...)
+		end
+	end
+
+	local p = promise.new()
+	local asyncId = rpcId
+	rpcId = rpcId + 1
+
+	local refId = ('%d:%d'):format(GetInstanceId(), asyncId)
+
+	eventTriggerFn('__cfx_rpcReq', repName, refId, ref, args)
+
+	-- add rpc promise
+	rpcPromises[refId] = p
+
+	-- add a player promise
+	if not playerPromises[src] then
+		playerPromises[src] = {}
+	end
+
+	playerPromises[src][refId] = true
+
+	return Citizen.Await(p)
+end
+
 local funcref_mt = {
 	__gc = function(t)
 		DeleteFunctionReference(rawget(t, '__cfx_functionReference'))
@@ -369,23 +552,50 @@ local funcref_mt = {
 	end,
 
 	__call = function(t, ...)
+		local netSource = rawget(t, '__cfx_functionSource')
 		local ref = rawget(t, '__cfx_functionReference')
-		local args = msgpack.pack({...})
 
-		-- as Lua doesn't allow directly getting lengths from a data buffer, and _s will zero-terminate, we have a wrapper in the game itself
-		local rv = Citizen.InvokeFunctionReference(ref, args)
+		if not netSource then
+			local args = msgpack.pack({...})
 
-		return table.unpack(msgpack.unpack(rv))
+			-- as Lua doesn't allow directly getting lengths from a data buffer, and _s will zero-terminate, we have a wrapper in the game itself
+			local rv = Citizen.InvokeFunctionReference(ref, args)
+			local rvs = msgpack.unpack(rv)
+
+			-- handle async retvals from refs
+			if rvs and type(rvs[1]) == 'table' and rawget(rvs[1], '__cfx_async_retval') and curThread then
+				local p = promise.new()
+
+				rvs[1].__cfx_async_retval(function(r, e)
+					if r then
+						p:resolve(r)
+					elseif e then
+						p:reject(e)
+					end
+				end)
+
+				return table.unpack(Citizen.Await(p))
+			end
+
+			return table.unpack(rvs)
+		else
+			return InvokeRpcEvent(tonumber(netSource.source:sub(5)), ref, {...})
+		end
 	end
 }
 
 msgpack.build_ext = function(tag, data)
-	if tag == EXT_FUNCREF then
+	if tag == EXT_FUNCREF or tag == EXT_LOCALFUNCREF then
 		local ref = data
 
 		local tbl = {
-			__cfx_functionReference = ref
+			__cfx_functionReference = ref,
+			__cfx_functionSource = deserializingNetEvent
 		}
+
+		if tag == EXT_LOCALFUNCREF then
+			tbl.__cfx_functionSource = nil
+		end
 
 		tbl = setmetatable(tbl, funcref_mt)
 
@@ -412,7 +622,9 @@ AddEventHandler(('on%sResourceStart'):format(IsDuplicityVersion() and 'Server' o
 
 			AddEventHandler(getExportEventName(resource, exportName), function(setCB)
 				-- get the entry from *our* global table and invoke the set callback
-				setCB(_G[exportName])
+				if _G[exportName] then
+					setCB(_G[exportName])
+				end
 			end)
 		end
 	end
@@ -465,6 +677,12 @@ setmetatable(exports, {
 
 	__newindex = function(t, k, v)
 		error('cannot set values on exports')
+	end,
+
+	__call = function(t, exportName, func)
+		AddEventHandler(getExportEventName(GetCurrentResourceName(), exportName), function(setCB)
+			setCB(func)
+		end)
 	end
 })
 

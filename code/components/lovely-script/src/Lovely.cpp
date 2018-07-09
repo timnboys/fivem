@@ -9,6 +9,8 @@
 
 #include <scrEngine.h>
 
+#include <NetLibrary.h>
+
 #include <FontRenderer.h>
 
 enum NativeIdentifiers : uint64_t
@@ -142,7 +144,7 @@ public:
 					{
 						int playerCount = 0;
 
-						for (int i = 0; i < 32; i++)
+						for (int i = 0; i < 256; i++)
 						{
 							// NETWORK_IS_PLAYER_ACTIVE
 							if (NativeInvoke::Invoke<0xB8DFD30D6973E135, bool>(i))
@@ -155,7 +157,8 @@ public:
 
 						if (playerCount != lastPlayerCount)
 						{
-							steam->SetRichPresenceValue(1, fmt::sprintf("%d players", playerCount));
+							steam->SetRichPresenceValue(1, fmt::sprintf("%d player%s", playerCount, (playerCount != 1) ? "s" : ""));
+							OnRichPresenceSetValue(1, fmt::sprintf("%d player%s", playerCount, (playerCount != 1) ? "s" : ""));
 							lastPlayerCount = playerCount;
 						}
 					}

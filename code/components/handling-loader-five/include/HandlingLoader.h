@@ -66,7 +66,7 @@ class CHandlingData
 {
 private:
 	uint32_t m_name;
-	char m_pad[324];
+	char m_pad[332]; // 1290
 	atArray<CBaseSubHandlingData*> m_subHandlingData;
 	char m_pad2[1000];
 
@@ -75,7 +75,7 @@ public:
 	{
 		memcpy(this, orig, sizeof(*this));
 
-		CBaseSubHandlingData* shds[3] = { 0 };
+		CBaseSubHandlingData* shds[6] = { 0 };
 
 		for (int i = 0; i < m_subHandlingData.GetCount(); i++)
 		{
@@ -92,6 +92,9 @@ public:
 		m_subHandlingData.Set(0, shds[0]);
 		m_subHandlingData.Set(1, shds[1]);
 		m_subHandlingData.Set(2, shds[2]);
+		m_subHandlingData.Set(3, shds[3]);
+		m_subHandlingData.Set(4, shds[4]);
+		m_subHandlingData.Set(5, shds[5]);
 	}
 
 	virtual ~CHandlingData() = default;
@@ -112,7 +115,7 @@ public:
 class CVehicle
 {
 private:
-	char m_pad[0x880]; // 1103
+	char m_pad[0x8C0]; // 1290
 	CHandlingData* m_handlingData;
 
 public:

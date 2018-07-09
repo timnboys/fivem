@@ -126,7 +126,7 @@ CRGBA CitizenNUIBackground::GetCurrentDWMColor(bool usePulse)
 	float alpha = colorizationColor.alpha / 255.0f;
 	float intensity = 0.5f;//parameters.ColorizationColorBalance / 100.0f;
 
-	float maxVal = 255.0f / max(colorizationColor.red, max(colorizationColor.green, colorizationColor.blue));
+	float maxVal = 255.0f / fwMax(colorizationColor.red, fwMax(colorizationColor.green, colorizationColor.blue));
 	
 	// calculate base color
 	float r = colorizationColor.red * maxVal;
@@ -309,9 +309,9 @@ rage::grcTexture* CitizenNUIBackground::InitializeTextureFromFile(std::wstring f
 			}
 
 			// create a pixel data buffer
-			uint32_t* pixelData = new uint32_t[width * height];
+			std::vector<uint32_t> pixelData(width * height);
 
-			hr = source->CopyPixels(nullptr, width * 4, width * height * 4, reinterpret_cast<BYTE*>(pixelData));
+			hr = source->CopyPixels(nullptr, width * 4, width * height * 4, reinterpret_cast<BYTE*>(pixelData.data()));
 
 			if (SUCCEEDED(hr))
 			{
@@ -326,7 +326,7 @@ rage::grcTexture* CitizenNUIBackground::InitializeTextureFromFile(std::wstring f
 #elif defined(GTA_FIVE)
 				reference.format = 11; // should correspond to DXGI_FORMAT_B8G8R8A8_UNORM
 #endif
-				reference.pixelData = (uint8_t*)pixelData;
+				reference.pixelData = (uint8_t*)pixelData.data();
 
 				return rage::grcTextureFactory::getInstance()->createImage(&reference, nullptr);
 			}

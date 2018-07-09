@@ -252,6 +252,10 @@ void NetLibraryImplV2::SendConnect(const std::string& connectData)
 
 	auto addr = m_base->GetCurrentServer().GetENetAddress();
 	m_serverPeer = enet_host_connect(m_host, &addr, 2, 0);
+
+#ifdef _DEBUG
+	enet_peer_timeout(m_serverPeer, 86400 * 1000, 86400 * 1000, 86400 * 1000);
+#endif
 }
 
 void NetLibraryImplV2::ProcessPacket(const uint8_t* data, size_t size)
@@ -262,7 +266,7 @@ void NetLibraryImplV2::ProcessPacket(const uint8_t* data, size_t size)
 	if (msgType == 1)
 	{
 		char dataCopy[8192];
-		memcpy(dataCopy, data, min(size, sizeof(dataCopy)));
+		memcpy(dataCopy, data, fwMin(size, sizeof(dataCopy)));
 		dataCopy[size] = '\0';
 
 		char* clientNetIDStr = &dataCopy[5];
@@ -276,7 +280,31 @@ void NetLibraryImplV2::ProcessPacket(const uint8_t* data, size_t size)
 		hostBaseStr[0] = '\0';
 		hostBaseStr++;
 
-		m_base->HandleConnected(atoi(clientNetIDStr), atoi(hostIDStr), atoi(hostBaseStr));
+		char* slotIDStr = strchr(hostBaseStr, ' ');
+
+		if (slotIDStr)
+		{
+			slotIDStr[0] = '\0';
+			slotIDStr++;
+		}
+		else
+		{
+			slotIDStr = "-1";
+		}
+
+		char* timeStr = strchr(slotIDStr, ' ');
+
+		if (timeStr)
+		{
+			timeStr[0] = '\0';
+			timeStr++;
+		}
+		else
+		{
+			timeStr = "-1";
+		}
+
+		m_base->HandleConnected(atoi(clientNetIDStr), atoi(hostIDStr), atoi(hostBaseStr), atoi(slotIDStr), _strtoi64(timeStr, nullptr, 10));
 
 		return;
 	}

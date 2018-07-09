@@ -1,4 +1,4 @@
-﻿/*
+/*
  * This file is part of the CitizenFX project - http://citizen.re/
  *
  * See LICENSE and MENTIONS in the root of the source tree for information
@@ -18,10 +18,14 @@
 
 #include <Error.h>
 
+#include <optional>
+
 class RageVFSDeviceAdapter : public rage::fiCustomDevice
 {
 private:
 	fwRefContainer<vfs::Device> m_cfxDevice;
+
+	std::optional<bool> m_collectionCache;
 
 public:
 	RageVFSDeviceAdapter(fwRefContainer<vfs::Device> device);
@@ -72,15 +76,15 @@ public:
 
 	virtual int FindClose(uint64_t handle) override;
 
-	virtual int GetResourceVersion(const char* fileName, rage::ResourceFlags* version) override
-	{
+	virtual int GetResourceVersion(const char* fileName, rage::ResourceFlags* version) override;
+	/*{
 		version->flag1 = 0;
 		version->flag2 = 0;
 
 		trace(__FUNCTION__ " not implemented");
 
 		return 0;
-	}
+	}*/
 
 	virtual int m_yx() override
 	{
@@ -194,6 +198,34 @@ uint64_t RageVFSDeviceAdapter::GetFileTime(const char* file)
 	return 125213779100000000;
 }
 
+#define VFS_GET_RAGE_PAGE_FLAGS 0x20001
+
+struct GetRagePageFlagsExtension
+{
+	const char* fileName; // in
+	int version;
+	rage::ResourceFlags flags; // out
+};
+
+int RageVFSDeviceAdapter::GetResourceVersion(const char* file, rage::ResourceFlags* version)
+{
+	GetRagePageFlagsExtension ext;
+	ext.fileName = file;
+
+	if (m_cfxDevice->ExtensionCtl(VFS_GET_RAGE_PAGE_FLAGS, &ext, sizeof(ext)))
+	{
+		*version = ext.flags;
+		return ext.version;
+	}
+
+	version->flag1 = 0;
+	version->flag2 = 0;
+
+	trace(__FUNCTION__ " not implemented");
+
+	return 0;
+}
+
 bool RageVFSDeviceAdapter::SetFileTime(const char* file, FILETIME fileTime)
 {
 	return false;
@@ -201,18 +233,7 @@ bool RageVFSDeviceAdapter::SetFileTime(const char* file, FILETIME fileTime)
 
 uint32_t RageVFSDeviceAdapter::GetFileAttributes(const char* path)
 {
-	uint32_t attributes = INVALID_FILE_ATTRIBUTES;
-
-	uint64_t handle = Open(path, true);
-
-	if (handle != -1)
-	{
-		attributes = 0;
-		
-		Close(handle);
-	}
-
-	return attributes;
+	return m_cfxDevice->GetAttributes(path);
 }
 
 uint64_t RageVFSDeviceAdapter::FindFirst(const char* folder, rage::fiFindData* findData)
@@ -298,6 +319,8 @@ public:
 	virtual bool FindNext(THandle handle, vfs::FindData* findData) override;
 
 	virtual void FindClose(THandle handle) override;
+
+	virtual uint32_t GetAttributes(const std::string& filename) override;
 
 	virtual void SetPathPrefix(const std::string& pathPrefix) override;
 
@@ -406,6 +429,11 @@ size_t RageVFSDevice::GetLength(const std::string& fileName)
 	return m_device->GetFileLengthLong(fileName.substr(m_pathPrefixLength).c_str());
 }
 
+uint32_t RageVFSDevice::GetAttributes(const std::string& fileName)
+{
+	return m_device->GetFileAttributes(fileName.substr(m_pathPrefixLength).c_str());
+}
+
 THandle RageVFSDevice::FindFirst(const std::string& folder, vfs::FindData* findData)
 {
 	rage::fiFindData findDataOrig;
@@ -459,25 +487,44 @@ bool RageVFSDevice::ExtensionCtl(int controlIdx, void* controlData, size_t contr
 
 		return FlushFileBuffers(reinterpret_cast<HANDLE>(data->handle));
 	}
+	else if (controlIdx == VFS_GET_RAGE_PAGE_FLAGS)
+	{
+		auto data = (GetRagePageFlagsExtension*)controlData;
+
+		std::string fileName = data->fileName;
+		data->version = m_device->GetResourceVersion(fileName.substr(m_pathPrefixLength).c_str(), &data->flags);
+
+		return true;
+	}
 
 	return false;
 }
 
 bool RageVFSDeviceAdapter::IsCollection()
 {
+	if (m_collectionCache)
+	{
+		return *m_collectionCache;
+	}
+
 	try
 	{
 		auto rageDevice = dynamic_cast<RageVFSDevice*>(m_cfxDevice.GetRef());
 
 		if (rageDevice != nullptr)
 		{
-			return rageDevice->IsCollection();
+			bool isCollection = rageDevice->IsCollection();
+			m_collectionCache = isCollection;
+			
+			return isCollection;
 		}
 	}
 	catch (std::bad_typeid)
 	{
 
 	}
+
+	m_collectionCache = false;
 
 	return false;
 }

@@ -171,6 +171,9 @@ void DrawConsole();
 
 static InitFunction initFunction([] ()
 {
+	auto cxt = ImGui::CreateContext();
+	ImGui::SetCurrentContext(cxt);
+
 	ImGuiIO& io = ImGui::GetIO();
 	io.KeyMap[ImGuiKey_Tab] = VK_TAB;                       // Keyboard mapping. ImGui will use those indices to peek into the io.KeyDown[] array that we will update during the application lifetime.
 	io.KeyMap[ImGuiKey_LeftArrow] = VK_LEFT;
@@ -192,7 +195,9 @@ static InitFunction initFunction([] ()
 	io.KeyMap[ImGuiKey_Y] = 'Y';
 	io.KeyMap[ImGuiKey_Z] = 'Z';
 
-	io.IniFilename = nullptr;
+
+	static std::string imguiIni = ToNarrow(MakeRelativeCitPath(L"citizen/imgui.ini"));
+	io.IniFilename = const_cast<char*>(imguiIni.c_str());
 	io.RenderDrawListsFn = RenderDrawLists;  // Alternatively you can set this to NULL and call ImGui::GetDrawData() after ImGui::Render() to get the same ImDrawData pointer.
 	//io.ImeWindowHandle = g_hWnd;
 

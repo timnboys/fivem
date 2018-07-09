@@ -40,6 +40,16 @@ boost::optional<PeerAddress> PeerAddress::FromString(const std::string& str, int
 		}
 	}
 
+	// strip IPv6 brackets, these aren't cross-platform
+	// (Windows accepts them, but Linux doesn't, without brackets is accepted by both systems)
+	if (resolveName.length() > 0)
+	{
+		if (resolveName[0] == '[' && resolveName[resolveName.length() - 1] == ']')
+		{
+			resolveName = resolveName.substr(1, resolveName.length() - 2);
+		}
+	}
+
 	boost::optional<PeerAddress> retval;
 
 	// if we're supposed to resolve the passed name, try that
@@ -105,6 +115,9 @@ socklen_t PeerAddress::GetSocketAddressLength() const
 {
 	switch (m_addr.addr.ss_family)
 	{
+		case 0:
+			return sizeof(m_addr.addr.ss_family);
+
 		case AF_INET:
 			return sizeof(sockaddr_in);
 
@@ -147,7 +160,7 @@ int PeerAddress::GetPort() const
 
 	// get the port
 	int family = m_addr.addr.ss_family;
-	uint16_t port;
+	uint16_t port = 0;
 
 	switch (family)
 	{

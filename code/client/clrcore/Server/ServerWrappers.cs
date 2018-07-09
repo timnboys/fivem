@@ -48,6 +48,36 @@ namespace CitizenFX.Core
 				}
 			}
 		}
+
+		protected bool Equals(Player other) => string.Equals(Handle, other.Handle);
+
+		/// <inheritdoc />
+		public override bool Equals(object obj)
+		{
+			if (ReferenceEquals(null, obj))
+			{
+				return false;
+			}
+
+			if (ReferenceEquals(this, obj))
+			{
+				return true;
+			}
+
+			if (obj.GetType() != this.GetType())
+			{
+				return false;
+			}
+
+			return Equals((Player) obj);
+		}
+
+		/// <inheritdoc />
+		public override int GetHashCode() => (m_handle != null ? m_handle.GetHashCode() : 0);
+
+		public static bool operator ==(Player left, Player right) => Equals(left, right);
+
+		public static bool operator !=(Player left, Player right) => !Equals(left, right);
 	}
 
 	public class IdentifierCollection : IEnumerable<string>

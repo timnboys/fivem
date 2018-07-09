@@ -101,4 +101,43 @@ static InitFunction initFunction([] ()
 	{
 		sf::RegisterFontLib(context.GetArgument<const char*>(0));
 	});
+
+	fx::ScriptEngine::RegisterNativeHandler("ADD_MINIMAP_OVERLAY", [](fx::ScriptContext& context)
+	{
+		fx::OMPtr<IScriptRuntime> runtime;
+
+		if (FX_SUCCEEDED(fx::GetCurrentScriptRuntime(&runtime)))
+		{
+			fx::Resource* resource = reinterpret_cast<fx::Resource*>(runtime->GetParentObject());
+			int overlayIdx = sf::AddMinimapOverlay(resource->GetPath() + "/" + context.GetArgument<const char*>(0));
+
+			resource->OnStop.Connect([=]()
+			{
+				sf::RemoveMinimapOverlay(overlayIdx);
+			});
+
+			context.SetResult(overlayIdx);
+			return;
+		}
+
+		context.SetResult(-1);
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("HAS_MINIMAP_OVERLAY_LOADED", [](fx::ScriptContext& context)
+	{
+		context.SetResult(sf::HasMinimapLoaded(context.GetArgument<int>(0)));
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("CALL_MINIMAP_SCALEFORM_FUNCTION", [](fx::ScriptContext& context)
+	{
+		context.SetResult(sf::CallMinimapOverlay(context.GetArgument<int>(0), context.GetArgument<const char*>(1)));
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("SET_MINIMAP_OVERLAY_DISPLAY", [](fx::ScriptContext& context)
+	{
+		sf::SetMinimapOverlayDisplay(context.GetArgument<int>(0),
+			context.GetArgument<float>(1), context.GetArgument<float>(2),
+			context.GetArgument<float>(3), context.GetArgument<float>(4),
+			context.GetArgument<float>(5));
+	});
 });

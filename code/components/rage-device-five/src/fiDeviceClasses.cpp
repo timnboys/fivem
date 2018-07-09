@@ -2,6 +2,7 @@
 #include "fiDevice.h"
 #include "Hooking.h"
 
+#include <LaunchMode.h>
 #include <Error.h>
 
 namespace rage
@@ -84,12 +85,12 @@ fiPackfile::fiPackfile()
 }
 
 //// fiPackfile::openArchive ////
-hook::thiscall_stub<void(fiPackfile*, const char*, bool, int, intptr_t)> fiPackfile__openArchive([] ()
+hook::thiscall_stub<bool(fiPackfile*, const char*, bool, int, intptr_t)> fiPackfile__openArchive([] ()
 {
 	return hook::pattern("48 8D 68 98 48 81 EC 40 01 00 00 41 8B F9").count(1).get(0).get<void>(-0x18);
 });
 
-void fiPackfile::OpenPackfile(const char* archive, bool bTrue, int type, intptr_t veryFalse)
+bool fiPackfile::OpenPackfile(const char* archive, bool bTrue, int type, intptr_t veryFalse)
 {
 	return fiPackfile__openArchive(this, archive, bTrue, type, veryFalse);
 }
@@ -136,6 +137,11 @@ static HookFunction hookFunction([] ()
 
 	rage::fiDevice::OnInitialMount.Connect([]()
 	{
+		if (CfxIsSinglePlayer())
+		{
+			return;
+		}
+
 		// check if OpenIV.asi hooks have been applied
 		void** vtbl = (void**)g_vTable_fiEncryptingDevice;
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atArray.h>
+
 #ifdef COMPILING_GTA_STREAMING_FIVE
 #define STREAMING_EXPORT DLL_EXPORT
 #else
@@ -46,6 +48,113 @@ namespace streaming
 		uint32_t Index;
 	};
 
+	struct strAssetReference
+	{
+		void* unknown;
+		void* asset;
+	};
+
+	class strStreamingModule
+	{
+	public:
+		virtual ~strStreamingModule() = 0;
+
+		//
+		// Creates a new asset for `name`, or returns the existing index in this module for it.
+		//
+		virtual uint32_t* GetOrCreate(uint32_t* id, const char* name) = 0;
+
+		//
+		// Returns the index in this streaming module for the asset specified by `name`.
+		//
+		virtual uint32_t* GetIndexByName(uint32_t* id, const char* name) = 0;
+
+		//
+		// Unloads the specified asset from the streaming module.
+		// This won't update the asset state in CStreaming, use these functions instead.
+		//
+		virtual void UnloadEntry(uint32_t id) = 0;
+
+		//
+		// Removes the specified asset from the streaming module.
+		//
+		virtual void DeleteEntry(uint32_t object) = 0;
+
+		//
+		// Loads an asset from an in-memory RSC file.
+		//
+		virtual bool LoadFromMemory(uint32_t object, const void* buffer, uint32_t length) = 0;
+
+		//
+		// Loads an asset from a block map.
+		//
+		virtual void LoadFromBlockMap(uint32_t object, void* blockMap, const char* name) = 0;
+
+		//
+		// Sets the asset pointer directly.
+		//
+		virtual void SetAssetReference(uint32_t object, strAssetReference& reference) = 0;
+
+		//
+		// Gets the asset pointer for a loaded asset.
+		// Returns NULL if not loaded.
+		//
+		virtual void* GetAssetPointer(uint32_t object) = 0;
+
+		virtual void* GetAssetPointer_2(uint32_t object) = 0;
+
+		virtual void* Defrag(uint32_t object, void* blockMap, const char* name) = 0;
+
+		// nullsub
+		virtual void m_58() = 0;
+
+		// nullsub
+		virtual void m_60() = 0;
+
+		// only overridden in specific modules
+		virtual void* GetAssetPointer_Module(uint32_t object) = 0;
+
+		// nullsub
+		virtual void m_70() = 0;
+
+		// unknown function, involving releasing
+		virtual void m_78(uint32_t object, int) = 0;
+
+		virtual void AddRef(uint32_t id) = 0;
+
+		virtual void Release(uint32_t id) = 0;
+
+		virtual void m_90() = 0; // resetrefcount
+
+		virtual int GetRefCount(uint32_t id) = 0;
+
+		//
+		// Formats the reference count as a string.
+		//
+		virtual const char* FormatRefCount(uint32_t id, char* buffer, size_t length) = 0;
+
+		virtual int GetDependencies(uint32_t object, uint32_t* outDependencies, size_t count) = 0;
+
+		// nullsub?
+		virtual void m_B0() = 0;
+		virtual void m_B8() = 0;
+		virtual void m_C0() = 0;
+
+		// ...
+
+		uint32_t baseIdx;
+	};
+
+	class STREAMING_EXPORT strStreamingModuleMgr
+	{
+	public:
+		virtual ~strStreamingModuleMgr() = default;
+
+		strStreamingModule* GetStreamingModule(int index);
+
+		strStreamingModule* GetStreamingModule(const char* extension);
+	};
+
 	// actually CStreaming
 	class STREAMING_EXPORT Manager
 	{
@@ -55,17 +164,26 @@ namespace streaming
 	public:
 		void RequestObject(uint32_t objectId, int flags);
 
-		void ReleaseObject(uint32_t objectId);
+		bool ReleaseObject(uint32_t objectId);
+
+		bool ReleaseObject(uint32_t objectId, int flags);
 
 		static Manager* GetInstance();
 
 	public:
 		StreamingDataEntry* Entries;
-		char pad[88];
+		char pad3[16];
+		int numEntries;
+		int f;
+		char pad[88 - 16 - 8];
 		StreamingListEntry* RequestListHead;
 		StreamingListEntry* RequestListTail;
 
-		char pad2[368];
+		char pad2[368 - 40];
+
+		strStreamingModuleMgr moduleMgr;
+
+		char pad4[32];
 
 		int NumPendingRequests;
 		int NumPendingRequests3;
@@ -78,9 +196,13 @@ namespace streaming
 
 	STREAMING_EXPORT const std::string& GetStreamingNameForIndex(uint32_t index);
 
-	STREAMING_EXPORT StreamingPackfileEntry* GetStreamingPackfileForEntry(StreamingDataEntry* entry);
+	STREAMING_EXPORT StreamingPackfileEntry* GetStreamingPackfileByIndex(int index);
 
 	STREAMING_EXPORT uint32_t RegisterRawStreamingFile(uint32_t* fileId, const char* fileName, bool unkTrue, const char* registerAs, bool errorIfFailed);
+
+	STREAMING_EXPORT StreamingPackfileEntry* GetStreamingPackfileForEntry(StreamingDataEntry* entry);
+
+	atArray<StreamingPackfileEntry>& GetStreamingPackfileArray();
 }
 
 #if 0

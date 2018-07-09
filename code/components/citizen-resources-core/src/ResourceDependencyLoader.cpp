@@ -9,7 +9,9 @@ static InitFunction initFunction([]()
 {
 	fx::Resource::OnInitializeInstance.Connect([] (fx::Resource* resource)
 	{
-		resource->OnStart.Connect([=] ()
+		static std::multimap<std::string, std::string> resourceDependencies;
+
+		resource->OnBeforeStart.Connect([=] ()
 		{
 			fx::ResourceManager* manager = resource->GetManager();
 			manager->MakeCurrent();
@@ -28,11 +30,19 @@ static InitFunction initFunction([]()
 						return false;
 					}
 
+					if (other->GetState() == fx::ResourceState::Starting || other->GetState() == fx::ResourceState::Started)
+					{
+						continue;
+					}
+
 					bool success = other->Start();
 
 					if (!success)
 					{
 						trace("Could not start dependency %s for resource %s.\n", dependency.second, resource->GetName());
+
+						resourceDependencies.insert({ other->GetName(), resource->GetName() });
+
 						return false;
 					}
 				}
@@ -41,6 +51,29 @@ static InitFunction initFunction([]()
 			};
 
 			return loadDeps("dependency") && loadDeps("dependencie"); // dependencies without s
-		}, -99999);
+		}, -9999);
+
+		resource->OnStart.Connect([=]()
+		{
+			auto pendingDeps = resourceDependencies.equal_range(resource->GetName());
+
+			fx::ResourceManager* manager = resource->GetManager();
+			manager->MakeCurrent();
+
+			// copy in case the container gets mutated
+			std::set<std::pair<std::string, std::string>> deps(pendingDeps.first, pendingDeps.second);
+			
+			for (auto dep : deps)
+			{
+				auto dependant = manager->GetResource(dep.second);
+
+				if (dependant.GetRef())
+				{
+					dependant->Start();
+				}
+			}
+
+			resourceDependencies.erase(resource->GetName());
+		}, 9999999);
 	});
 });

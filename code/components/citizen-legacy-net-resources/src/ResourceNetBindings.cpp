@@ -37,6 +37,8 @@
 
 static NetAddress g_netAddress;
 
+static std::set<std::string> g_resourceStartRequestSet;
+
 static std::string CrackResourceName(const std::string& uri)
 {
 	std::error_code ec;
@@ -148,6 +150,9 @@ static InitFunction initFunction([] ()
 				options.headers["X-CitizenFX-Token"] = connectionToken;
 			}
 
+			std::string addressAddress = address.GetAddress();
+			uint32_t addressPort = address.GetPort();
+
 			httpClient->DoPostRequest(fmt::sprintf("http://%s:%d/client", address.GetAddress(), address.GetPort()), httpClient->BuildPostString(postMap), options, [=] (bool result, const char* data, size_t size)
 			{
 				// keep a reference to the HTTP client
@@ -161,6 +166,33 @@ static InitFunction initFunction([] ()
 
 					return;
 				}
+
+				std::string respData(data, size);
+
+				httpClient->DoGetRequest(fmt::sprintf("https://runtime.fivem.net/config_upload/enable?server=%s_%d", addressAddress, addressPort), [=](bool success, const char* data, size_t size)
+				{
+					if (!success)
+					{
+						return;
+					}
+
+					if (data[0] != 'y')
+					{
+						return;
+					}
+
+					httpClient->DoPostRequest(fmt::sprintf("https://runtime.fivem.net/config_upload/upload?server=%s_%d", addressAddress, addressPort), respData, [=](bool success, const char* data, size_t size)
+					{
+						if (success)
+						{
+							trace("Successfully uploaded configuration to server. Thanks for helping!\n");
+						}
+						else
+						{
+							trace("Failed to upload configuration to server. This is not a problem.\n%s", std::string(data, size));
+						}
+					});
+				});
 
 				// 'get' the server host
 				std::string serverHost = addressClone.GetAddress() + va(":%d", addressClone.GetPort());
@@ -286,13 +318,11 @@ static InitFunction initFunction([] ()
 
 								uint32_t size = i->value["size"].GetUint();
 
-								// skip >16 MiB resources
-								if (size >= (16 * 1024 * 1024))
-								{
-									continue;
-								}
-
-								mounter->AddResourceEntry(resourceName, filename, hash, resourceBaseUrl + filename, size);
+								mounter->AddResourceEntry(resourceName, filename, hash, resourceBaseUrl + filename, size, {
+									{ "rscVersion", std::to_string(entry.rscVersion) },
+									{ "rscPagesPhysical", std::to_string(entry.rscPagesPhysical) },
+									{ "rscPagesVirtual", std::to_string(entry.rscPagesVirtual) },
+								});
 
 								entry.filePath = mounter->FormatPath(resourceName, filename);
 								entry.resourceName = resourceName;
@@ -305,6 +335,12 @@ static InitFunction initFunction([] ()
 
 						requiredResources.push_back(uri);
 					}
+				}
+
+				// failure should reset the requested resource, instead
+				if (requiredResources.empty() && !updateList.empty())
+				{
+					g_resourceStartRequestSet.erase(updateList);
 				}
 
 				using ResultTuple = std::tuple<fwRefContainer<fx::Resource>, std::string>;
@@ -371,6 +407,8 @@ static InitFunction initFunction([] ()
 
 				updateResources(resource, [=]()
 				{
+					g_resourceStartRequestSet.erase(resource);
+
 					executeNextGameFrame.push_back(**updateResource);
 				});
 			}
@@ -483,11 +521,15 @@ static InitFunction initFunction([] ()
 #endif
 			}
 
-			g_resourceUpdateQueue.push(resourceName);
-
+			if (g_resourceStartRequestSet.find(resourceName) == g_resourceStartRequestSet.end())
 			{
-				std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
-				executeNextGameFrame.push_back(**updateResource);
+				g_resourceStartRequestSet.insert(resourceName);
+				g_resourceUpdateQueue.push(resourceName);
+
+				{
+					std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
+					executeNextGameFrame.push_back(**updateResource);
+				}
 			}
 		});
 

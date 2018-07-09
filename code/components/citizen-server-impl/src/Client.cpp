@@ -5,15 +5,15 @@
 namespace fx
 {
 	Client::Client(const std::string& guid)
-		: m_guid(guid), m_netId(0xFFFF), m_netBase(-1), m_lastSeen(0), m_hasRouted(false)
+		: m_guid(guid), m_netId(0xFFFF), m_netBase(-1), m_lastSeen(0), m_hasRouted(false), m_slotId(-1)
 	{
 
 	}
 
-	void Client::SetPeer(ENetPeer* peer)
+	void Client::SetPeer(int peer, const net::PeerAddress& peerAddress)
 	{
-		m_peer.reset(peer);
-		m_peerAddress = GetPeerAddress(peer->address);
+		m_peer.reset(new int(peer));
+		m_peerAddress = peerAddress;
 
 		OnAssignPeer();
 	}
@@ -80,8 +80,7 @@ namespace fx
 	{
 		if (m_peer)
 		{
-			auto packet = enet_packet_create(buffer.GetBuffer(), buffer.GetLength(), flags);
-			enet_peer_send(m_peer.get(), channel, packet);
+			gscomms_send_packet(*m_peer.get(), channel, buffer, flags);
 		}
 	}
 }

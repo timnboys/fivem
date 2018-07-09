@@ -86,14 +86,14 @@ static InitFunction initFunction([]()
 
 	fx::ScriptEngine::RegisterNativeHandler("GET_PLAYER_PING", makeClientFunction([](fx::ScriptContext& context, const std::shared_ptr<fx::Client>& client)
 	{
-		auto peer = client->GetPeer();
+		auto peer = gscomms_get_peer(client->GetPeer());
 
 		if (!peer)
 		{
 			return -1;
 		}
 
-		return (int)peer->lastRoundTripTime;
+		return int(peer->lastRoundTripTime);
 	}));
 
 	fx::ScriptEngine::RegisterNativeHandler("GET_PLAYER_LAST_MSG", makeClientFunction([](fx::ScriptContext& context, const std::shared_ptr<fx::Client>& client)
@@ -209,4 +209,16 @@ static InitFunction initFunction([]()
 			context.SetResult(id.c_str());
 		}
 	});
+
+	fx::ScriptEngine::RegisterNativeHandler("GET_PLAYER_PED", makeClientFunction([](fx::ScriptContext& context, const std::shared_ptr<fx::Client>& client) -> uint32_t
+	{
+		try
+		{
+			return std::any_cast<uint32_t>(client->GetData("playerEntity"));
+		}
+		catch (std::bad_any_cast&)
+		{
+			return 0;
+		}
+	}));
 });

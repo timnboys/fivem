@@ -11,6 +11,8 @@
 
 #include <Error.h>
 
+#include <ShaderInfo.h>
+
 #define RAGE_FORMATS_GAME ny
 #define RAGE_FORMATS_GAME_NY
 #include <gtaDrawable.h>
@@ -26,19 +28,31 @@ namespace rage
 {
 inline std::string ConvertSpsName_NY_Five(const char* oldSps)
 {
+	if (!oldSps)
+	{
+		return "default.sps";
+	}
+
 	if (strstr(oldSps, "3lyr") || strstr(oldSps, "2lyr"))
+	{
+		return "terrain_cb_4lyr_lod.sps"; // regular 4lyr has bump mapping/normals
+	}
+
+	if (strstr(oldSps, "va_4lyr"))
 	{
 		return "terrain_cb_4lyr_lod.sps"; // regular 4lyr has bump mapping/normals
 	}
 
 	if (strstr(oldSps, "gta_wire"))
 	{
-		return "default.sps";
+		return "cable.sps";
 	}
 
 	if (strstr(oldSps, "gta_"))
 	{
-		return &oldSps[4] + std::string(".sps");
+		std::string name = &oldSps[4];
+
+		return name.substr(0, name.find_last_of('.')) + ".sps";
 	}
 
 	return "default.sps";
@@ -53,7 +67,7 @@ inline std::string ConvertShaderName_NY_Five(const char* oldSps)
 
 	if (strstr(oldSps, "gta_wire"))
 	{
-		return "default";
+		return "cable";
 	}
 
 	if (strstr(oldSps, "gta_"))
@@ -72,6 +86,8 @@ template<>
 five::pgDictionary<five::grcTexturePC>* convert(ny::pgDictionary<ny::grcTexturePC>* txd)
 {
 	five::pgDictionary<five::grcTexturePC>* out = new(false) five::pgDictionary<five::grcTexturePC>();
+	out->SetBlockMap();
+
 	five::pgDictionary<five::grcTexturePC> newTextures;
 
 	if (txd->GetCount()) // amazingly there's 0-sized TXDs?
@@ -113,21 +129,46 @@ five::grmShaderGroup* convert(ny::grmShaderGroup* shaderGroup)
 		out->SetTextures(convert<five::pgDictionary<five::grcTexturePC>*>(texDict));
 	}
 
-	five::pgPtr<five::grmShaderFx> newShaders[128];
+	five::pgPtr<five::grmShaderFx> newShaders[512];
 	
 	for (int i = 0; i < shaderGroup->GetNumShaders(); i++)
 	{
 		auto oldShader = shaderGroup->GetShader(i);
-		auto newSpsName = ConvertSpsName_NY_Five(oldShader->GetSpsName());
-		auto newShaderName = ConvertShaderName_NY_Five(oldShader->GetShaderName());
+		auto oldSpsName = oldShader->GetSpsName();
+		auto oldShaderName = oldShader->GetShaderName();
+		auto newSpsName = ConvertSpsName_NY_Five(oldSpsName);
+		auto newShaderName = ConvertShaderName_NY_Five(oldShaderName);
+
+		auto spsFile = fxc::SpsFile::Load(MakeRelativeCitPath(fmt::sprintf(L"citizen\\shaders\\db\\%s", ToWide(newSpsName))));
+
+		if (spsFile)
+		{
+			newShaderName = spsFile->GetShader();
+		}
 
 		auto newShader = new(false) five::grmShaderFx();
 		newShader->DoPreset(newShaderName.c_str(), newSpsName.c_str());
-		newShader->SetDrawBucket(oldShader->GetDrawBucket()); // in case the lack of .sps reading doesn't override it, yet
+
+		if (spsFile)
+		{
+			auto db = spsFile->GetParameter("__rage_drawbucket");
+
+			if (db)
+			{
+				newShader->SetDrawBucket(db->GetInt());
+			}
+		}
+		else
+		{
+			// no known sps drawbucket, set the original one
+			newShader->SetDrawBucket(oldShader->GetDrawBucket());
+		}
 
 		auto& oldEffect = oldShader->GetEffect();
 
 		int rescount = 0;
+
+		auto shaderFile = fxc::ShaderFile::Load(MakeRelativeCitPath(va(L"citizen\\shaders\\win32_40_final\\%s.fxc", ToWide(newShaderName))));
 
 		for (int j = 0; j < oldEffect.GetParameterCount(); j++)
 		{
@@ -140,11 +181,11 @@ five::grmShaderGroup* convert(ny::grmShaderGroup* shaderGroup)
 			if (hash == 0x2B5170FD) // TextureSampler
 			{
 				newSamplerName = HashString("DiffuseSampler");
-			}
-			else if (hash == 0xF6712B81)
-			{
-				newValueName = HashString("bumpiness"); // as, well, it's bumpiness?
-				newValueSize = 4 * sizeof(float);
+
+				if (newSpsName.find("cable") != std::string::npos)
+				{
+					newSamplerName = HashString("TextureSamp");
+				}
 			}
 
 			if (!newSamplerName)
@@ -156,6 +197,25 @@ five::grmShaderGroup* convert(ny::grmShaderGroup* shaderGroup)
 					if (newParam->IsSampler())
 					{
 						newSamplerName = hash;
+					}
+				}
+			}
+
+			if (!newSamplerName && !newValueName)
+			{
+				auto newParam = newShader->GetParameter(hash);
+
+				if (newParam && !newParam->IsSampler())
+				{
+					for (auto& parameter : shaderFile->GetLocalParameters())
+					{
+						if (HashString(parameter.first.c_str()) == hash)
+						{
+							newValueName = hash;
+							newValueSize = parameter.second->GetDefaultValue().size();
+
+							break;
+						}
 					}
 				}
 			}
@@ -195,6 +255,36 @@ five::grmShaderGroup* convert(ny::grmShaderGroup* shaderGroup)
 			{
 				newShader->SetParameter(newValueName, oldEffect.GetParameterValue(j), newValueSize);
 			}
+			else if (hash == HashString("specularFactor"))
+			{
+				float multiplier[4];
+				memcpy(multiplier, oldEffect.GetParameterValue(j), sizeof(multiplier));
+
+				multiplier[0] /= 100.0f;
+
+				if (newShader->GetParameter("specularIntensityMult"))
+				{
+					newShader->SetParameter("specularIntensityMult", &multiplier, sizeof(multiplier));
+				}
+			}
+		}
+
+		if (auto falloffMult = newShader->GetParameter("SpecularFalloffMult"); falloffMult != nullptr)
+		{
+			float falloffMultValue[] = { *(float*)falloffMult->GetValue() * 4.0f, 0.0f, 0.0f, 0.0f };
+
+			if (newShaderName.find("decal") == 0)
+			{
+				falloffMultValue[0] = 100.f;
+			}
+
+			memcpy(falloffMult->GetValue(), falloffMultValue, sizeof(falloffMultValue));
+		}
+
+		if (auto emissiveMult = newShader->GetParameter("EmissiveMultiplier"); emissiveMult != nullptr)
+		{
+			float emissiveMultValue[] = { *(float*)emissiveMult->GetValue() / 4.0f, 0.0f, 0.0f, 0.0f };
+			memcpy(emissiveMult->GetValue(), emissiveMultValue, sizeof(emissiveMultValue));
 		}
 
 		if (newShaderName == "trees")
@@ -251,6 +341,21 @@ five::grcVertexFormat* convert(ny::grcVertexFormat* format)
 	return new(false) five::grcVertexFormat(format->GetMask(), format->GetVertexSize(), format->GetFieldCount(), format->GetFVF());
 }
 
+enum class FVFType
+{
+	Nothing = 0,
+	Float16_2,
+	Float,
+	Float16_4,
+	Float_unk,
+	Float2,
+	Float3,
+	Float4,
+	UByte4,
+	Color,
+	Dec3N
+};
+
 template<>
 five::grcVertexBufferD3D* convert(ny::grcVertexBufferD3D* buffer)
 {
@@ -262,6 +367,62 @@ five::grcVertexBufferD3D* convert(ny::grcVertexBufferD3D* buffer)
 	if (g_vertexBufferMatches.find(oldBuffer) != g_vertexBufferMatches.end())
 	{
 		oldBuffer = g_vertexBufferMatches[oldBuffer];
+	}
+	else
+	{
+		auto vertexFormat = buffer->GetVertexFormat();
+		
+		auto mask = vertexFormat->GetMask();
+
+		for (int i = 0; i < buffer->GetCount(); i++)
+		{
+			char* thisBit = (char*)oldBuffer + (buffer->GetStride() * i);
+			size_t off = 0;
+
+			for (int j = 0; j < 32; j++)
+			{
+				if (vertexFormat->GetMask() & (1 << j))
+				{
+					uint64_t fvf = vertexFormat->GetFVF();
+					auto type = (FVFType)((fvf >> (j * 4)) & 0xF);
+
+					switch (type)
+					{
+					case FVFType::Float4:
+						off += 4;
+					case FVFType::Float3:
+						off += 4;
+					case FVFType::Float2:
+						off += 4;
+					case FVFType::Nothing:
+					case FVFType::Float:
+					case FVFType::Float_unk:
+						off += 4;
+						break;
+					case FVFType::Dec3N:
+						off += 4;
+						break;
+					case FVFType::Color:
+					case FVFType::UByte4:
+						if (j == 4)
+						{
+							uint8_t* rgba = (uint8_t*)(thisBit + off);
+
+							rgba[1] = uint8_t(rgba[1] * 0.5f); // 50% of original green
+						}
+
+						off += 4;
+						break;
+					case FVFType::Float16_2:
+						off += 4;
+						break;
+					default:
+						trace("unknown vertex type?\n");
+						break;
+					}
+				}
+			}
+		}
 	}
 
 	auto out = new(false) five::grcVertexBufferD3D;
@@ -338,7 +499,7 @@ five::gtaDrawable* convert(ny::gtaDrawable* drawable)
 	lodGroup.SetBounds(
 		minBounds,
 		maxBounds,
-		oldLodGroup.GetCenter(), oldLodGroup.GetRadius() * 2
+		oldLodGroup.GetCenter(), oldLodGroup.GetRadius()
 	);
 	//lodGroup.SetBounds(Vector3(-66.6f, -66.6f, -10.0f), Vector3(66.6f, 66.6f, 10.0f), Vector3(0.0f, 0.0f, 0.0f), 94.8f);
 
@@ -358,18 +519,20 @@ five::gtaDrawable* convert(ny::gtaDrawable* drawable)
 
 				if (oldBounds)
 				{
-					std::vector<five::GeometryBound> geometryBounds(newModel->GetGeometries().GetCount() + 1);
+					int extraSize = 0;
 
-					for (int i = 1; i < geometryBounds.size(); i++)
+					if (newModel->GetGeometries().GetCount() > 1)
 					{
-						oldBounds[i - 1].w *= 2;
-
-						geometryBounds[i].aabbMin = Vector4(oldBounds[i - 1].x - oldBounds[i - 1].w, oldBounds[i - 1].y - oldBounds[i - 1].w, oldBounds[i - 1].z - oldBounds[i - 1].w, -oldBounds[i - 1].w);
-						geometryBounds[i].aabbMax = Vector4(oldBounds[i - 1].x + oldBounds[i - 1].w, oldBounds[i - 1].y + oldBounds[i - 1].w, oldBounds[i - 1].z + oldBounds[i - 1].w, oldBounds[i - 1].w);
+						extraSize = 1;
 					}
 
-					geometryBounds[0].aabbMin = Vector4(minBounds.x, minBounds.y, minBounds.z, oldLodGroup.GetRadius() * -2.0f);
-					geometryBounds[0].aabbMax = Vector4(maxBounds.x, maxBounds.y, maxBounds.z, oldLodGroup.GetRadius() * 2.0f);
+					std::vector<five::GeometryBound> geometryBounds(newModel->GetGeometries().GetCount() + extraSize);
+
+					for (int i = 0; i < geometryBounds.size(); i++)
+					{
+						geometryBounds[i].aabbMin = Vector4(oldBounds[i].x - oldBounds[i].w, oldBounds[i].y - oldBounds[i].w, oldBounds[i].z - oldBounds[i].w, -oldBounds[i].w);
+						geometryBounds[i].aabbMax = Vector4(oldBounds[i].x + oldBounds[i].w, oldBounds[i].y + oldBounds[i].w, oldBounds[i].z + oldBounds[i].w, oldBounds[i].w);
+					}
 
 					newModel->SetGeometryBounds(geometryBounds.size(), &geometryBounds[0]);
 				}
@@ -379,6 +542,69 @@ five::gtaDrawable* convert(ny::gtaDrawable* drawable)
 
 	out->SetPrimaryModel();
 	out->SetName("lovely.#dr");
+
+	if (drawable->GetNumLightAttrs())
+	{
+		std::vector<five::CLightAttr> lightAttrs(drawable->GetNumLightAttrs());
+
+		for (int i = 0; i < lightAttrs.size(); i++)
+		{
+			ny::CLightAttr& inAttr = *drawable->GetLightAttr(i);
+			five::CLightAttr& outAttr = lightAttrs[i];
+
+			outAttr.position[0] = inAttr.position[0];
+			outAttr.position[1] = inAttr.position[1];
+			outAttr.position[2] = inAttr.position[2];
+			outAttr.color[0] = inAttr.color[0];
+			outAttr.color[1] = inAttr.color[1];
+			outAttr.color[2] = inAttr.color[2];
+			outAttr.flashiness = inAttr.flashiness;
+			outAttr.intensity = inAttr.lightIntensity;
+			outAttr.flags = inAttr.flags;
+			outAttr.boneID = inAttr.boneID;
+			outAttr.lightType = inAttr.lightType;
+			outAttr.groupID = 0;
+			outAttr.timeFlags = (inAttr.flags & 64) ? 0b111100'000000'000011'111111 : 0b111111'111111'111111'111111;
+			outAttr.falloff = (inAttr.lightFalloff == 0.0f) ? 17.0f : inAttr.lightFalloff;
+			outAttr.falloffExponent = 64.f;
+			outAttr.cullingPlane = { 0.0f, 0.0f, 1.0f, 200.0f };
+			outAttr.shadowBlur = 0;
+			outAttr.unk1 = 0;
+			outAttr.unk2 = 0;
+			outAttr.unk3 = 0;
+			outAttr.volumeIntensity = inAttr.volumeIntensity;
+			outAttr.volumeSizeScale = inAttr.volumeSize;
+			outAttr.volumeOuterColor[0] = inAttr.color[0];
+			outAttr.volumeOuterColor[1] = inAttr.color[1];
+			outAttr.volumeOuterColor[2] = inAttr.color[2];
+			outAttr.lightHash = inAttr.lumHash & 0xFF; // ?
+			outAttr.volumeOuterIntensity = inAttr.volumeIntensity;
+			outAttr.coronaSize = inAttr.coronaSize;
+			outAttr.volumeOuterExponent = 64.f;
+			outAttr.lightFadeDistance = inAttr.lightFadeDistance;
+			outAttr.shadowFadeDistance = inAttr.shadowFadeDistance;
+			outAttr.specularFadeDistance = 0.0f;
+			outAttr.volumetricFadeDistance = 0.0f;
+			outAttr.shadowNearClip = 0.01f;
+			outAttr.coronaIntensity = 0.2f;
+			outAttr.coronaZBias = 0.1f;
+			outAttr.direction[0] = inAttr.direction[0];
+			outAttr.direction[1] = inAttr.direction[1];
+			outAttr.direction[2] = inAttr.direction[2];
+			outAttr.tangent[0] = inAttr.tangent[0];
+			outAttr.tangent[1] = inAttr.tangent[1];
+			outAttr.tangent[2] = inAttr.tangent[2];
+			outAttr.coneInnerAngle = 5.f;
+			outAttr.coneOuterAngle = 60.f;
+			outAttr.extents[0] = 1.f;
+			outAttr.extents[1] = 1.f;
+			outAttr.extents[2] = 1.f;
+			outAttr.projectedTextureHash = 0;
+			outAttr.unk4 = 0;
+		}
+
+		out->SetLightAttrs(&lightAttrs[0], lightAttrs.size());
+	}
 
 	return out;
 }
@@ -402,5 +628,13 @@ five::pgDictionary<five::gtaDrawable>* convert(ny::pgDictionary<ny::gtaDrawable>
 	out->SetFrom(&newDrawables);
 
 	return out;
+}
+
+template<>
+five::fragType* convert(ny::fragType* frag)
+{
+	__debugbreak();
+
+	return nullptr;
 }
 }

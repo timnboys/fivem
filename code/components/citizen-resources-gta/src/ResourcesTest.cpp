@@ -28,8 +28,8 @@
 
 fwRefContainer<fx::ResourceManager> g_resourceManager;
 
-void CfxCollection_AddStreamingFile(const std::string& fileName, rage::ResourceFlags flags);
 void CfxCollection_AddStreamingFileByTag(const std::string& tag, const std::string& fileName, rage::ResourceFlags flags);
+void CfxCollection_RemoveStreamingTag(const std::string& tag);
 
 namespace streaming
 {
@@ -125,9 +125,6 @@ static InitFunction initFunction([] ()
 
 			auto entryListComponent = resource->GetComponent<ResourceEntryListComponent>();
 
-			streaming::AddDataFileToLoadList("RPF_FILE", "resource_surrogate:/" + resource->GetName() + ".rpf");
-			entryListComponent->list.push_front({ "RPF_FILE", "resource_surrogate:/" + resource->GetName() + ".rpf" });
-
 			auto view1 = metaData->GetEntries("data_file");
 			auto view2 = metaData->GetEntries("data_file_extra");
 
@@ -148,16 +145,20 @@ static InitFunction initFunction([] ()
 				}
 			}
 
-			streaming::AddDataFileToLoadList("CFX_PSEUDO_CACHE", resource->GetName());
-
 			{
 				auto map = metaData->GetEntries("this_is_a_map");
 
 				if (map.begin() != map.end())
 				{
+					// only load resource surrogates for this_is_a_map resources (as they might involve gta_cache files)
+					streaming::AddDataFileToLoadList("RPF_FILE", "resource_surrogate:/" + resource->GetName() + ".rpf");
+					entryListComponent->list.push_front({ "RPF_FILE", "resource_surrogate:/" + resource->GetName() + ".rpf" });
+
 					streaming::AddDataFileToLoadList("CFX_PSEUDO_ENTRY", "RELOAD_MAP_STORE");
 				}
 			}
+
+			streaming::AddDataFileToLoadList("CFX_PSEUDO_CACHE", resource->GetName());
 		}, 500);
 
 		resource->OnStop.Connect([=] ()
@@ -170,6 +171,8 @@ static InitFunction initFunction([] ()
 			}
 
 			entryListComponent->list.clear();
+
+			CfxCollection_RemoveStreamingTag(resource->GetName());
 		}, -500);
 	});
 

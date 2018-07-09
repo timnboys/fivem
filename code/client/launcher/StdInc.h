@@ -8,6 +8,7 @@
 #include "../shared/StdInc.h"
 
 int DL_RequestURL(const char* url, char* buffer, size_t bufSize);
+const char* DL_RequestURLError();
 
 // bootstrapper functions
 // move the bootstrapper files if called by the initializer
@@ -37,6 +38,8 @@ HWND UI_GetWindowHandle();
 bool Updater_RunUpdate(int numCaches, ...);
 const char* GetUpdateChannel();
 
-bool CheckFileOutdatedWithUI(const wchar_t* fileName, const uint8_t hash[20]);
+#include <array>
+
+bool CheckFileOutdatedWithUI(const wchar_t* fileName, const std::vector<std::array<uint8_t, 20>>& validHashes, std::array<uint8_t, 20>* foundHash = nullptr);
 
 #include "LauncherConfig.h"

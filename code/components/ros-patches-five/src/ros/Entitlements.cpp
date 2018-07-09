@@ -78,6 +78,8 @@ std::string GetFilePath(const std::string& str)
 
 #include <cpr/cpr.h>
 
+std::string GetOwnershipPath();
+
 static InitFunction initFunction([] ()
 {
 	EndpointMapper* mapper = Instance<EndpointMapper>::Get();
@@ -145,7 +147,9 @@ static InitFunction initFunction([] ()
 
 			if (r.status_code != 200)
 			{
-				FatalError("RS20");
+				DeleteFileW(ToWide(GetOwnershipPath()).c_str());
+
+				FatalError("Could not contact entitlement service. Status code: %d, error message: %d/%s, response body: %s", r.status_code, (int)r.error.code, r.error.message, r.text);
 			}
 
 			f = _wfopen(ToWide(filePath).c_str(), L"wb");
@@ -193,6 +197,11 @@ static InitFunction initFunction([] ()
 	mapper->AddGameService("socialclub.asmx/CreateScAuthToken", [] (const std::string& body)
 	{
 		return "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ms=\"0\" xmlns=\"CreateScAuthToken\"><Status>1</Status><Result>AAAAArgQdyps/xBHKUumlIADBO75R0gAekcl3m2pCg3poDsXy9n7Vv4DmyEmHDEtv49b5BaUWBiRR/lVOYrhQpaf3FJCp4+22ETI8H0NhuTTijxjbkvDEViW9x6bOEAWApixmQue2CNN3r7X8vQ/wcXteChEHUHi</Result></Response>";
+	});
+
+	mapper->AddGameService("socialclub.asmx/CreateScAuthToken2", [](const std::string& body)
+	{
+		return "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ms=\"0\" ScAuthToken=\"AAAAArgQdyps/xBHKUumlIADBO75R0gAekcl3m2pCg3poDsXy9n7Vv4DmyEmHDEtv49b5BaUWBiRR/lVOYrhQpaf3FJCp4+22ETI8H0NhuTTijxjbkvDEViW9x6bOEAWApixmQue2CNN3r7X8vQ/wcXteChEHUHi\" xmlns=\"CreateScAuthToken2\"><Status xmlns=\"CreateScAuthTokenResponse\">1</Status></Response>";
 	});
 
 	mapper->AddGameService("socialclub.asmx/CheckText", [] (const std::string& body)

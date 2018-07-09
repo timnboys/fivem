@@ -34,7 +34,7 @@ registerFrameFunction(function(msg, frameName, frameUrl)
 		var frame = document.createElement('iframe');
 	
 		frame.style.visibility = 'hidden';
-		
+		frame.allow = 'microphone *;';
 		frame.src = frameUrl;
 
 		citFrames[frameName] = frame;
@@ -46,6 +46,11 @@ registerFrameFunction(function(msg, frameName, frameUrl)
 		{
 			frame.style.visibility = 'visible';
 		}, true);
+
+		frame.contentWindow.GetParentResourceName = function()
+		{
+			return frameName;
+		}
 	}
 	else if (msg == "destroyFrame")
 	{

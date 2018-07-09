@@ -39,7 +39,7 @@ public:
 			{
 				set.insert(parenting.second);
 
-				AddPrincipals(principal, set);
+				AddPrincipals(parenting.second, set);
 			}
 		}
 	}
@@ -318,6 +318,14 @@ extern "C" se::Context* seGetCurrentContext()
 				seGetCurrentContext()->RemovePrincipalInheritance(se::Principal{ principal }, se::Principal{ parent });
 			});
 #endif
+
+			static ConsoleCommand testAceCmd("test_ace", [](const std::string& principal, const std::string& object)
+			{
+				console::Printf("security", "%s -> %s = %s\n", 
+					principal,
+					object,
+					seGetCurrentContext()->CheckPrivilege(se::Principal{ principal }, se::Object{ object }) ? "true" : "false");
+			});
 
 			static ConsoleCommand listPrincipalCmd("list_principals", []()
 			{

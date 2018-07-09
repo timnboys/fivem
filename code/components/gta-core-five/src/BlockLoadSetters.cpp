@@ -20,13 +20,15 @@
 
 #include <se/Security.h>
 
+#include <gameSkeleton.h>
+
 #include <Error.h>
 
 #include <LaunchMode.h>
 
 static hook::cdecl_stub<void()> lookAlive([] ()
 {
-	return hook::pattern("48 8D 6C 24 A0 48 81 EC 60 01 00 00 E8").count(1).get(0).get<void>(-0xC);
+	return hook::pattern("48 8D 6C 24 ? 48 81 EC ? 01 00 00 E8").count(1).get(0).get<void>(-0xC);
 });
 
 // map init states to cater for additional '7' in one particular digital distribution version
@@ -61,14 +63,6 @@ static std::vector<ProgramArguments> g_argumentList;
 
 static void WaitForInitLoop()
 {
-	// run command-line initialization
-	se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
-
-	for (const auto& bit : g_argumentList)
-	{
-		console::GetDefaultContext()->ExecuteSingleCommandDirect(bit);
-	}
-
 	// run our loop
 	g_isInInitLoop = true;
 
@@ -824,8 +818,6 @@ static int ReturnInt()
 	return Value;
 }
 
-static void(*g_origError)(uint32_t, void*);
-
 static void ErrorDo(uint32_t error)
 {
 	if (error == 0xbe0e0aea) // ERR_GEN_INVALID
@@ -834,8 +826,6 @@ static void ErrorDo(uint32_t error)
 	}
 
 	trace("error function called from %p for code 0x%08x\n", _ReturnAddress(), error);
-
-	//g_origError(error, 0);
 
 	// provide pickup file for minidump handler to use
 	FILE* dbgFile = _wfopen(MakeRelativeCitPath(L"cache\\error_out").c_str(), L"wb");
@@ -1137,6 +1127,32 @@ static void SafeRun(const T&& func)
 	}
 }
 
+static void OverrideArguments()
+{
+	// unless specified in INI, force windowed-borderless
+#ifdef EXPERIMENT_FLAG_DISABLE_FULLSCREEN
+	{
+		std::wstring fpath = MakeRelativeCitPath(L"CitizenFX.ini");
+
+		bool forceWindowed = true;
+
+		if (GetFileAttributes(fpath.c_str()) != INVALID_FILE_ATTRIBUTES)
+		{
+			forceWindowed = (GetPrivateProfileInt(L"Game", L"ForceWindowingMode", 1, fpath.c_str()) == 1);
+		}
+
+		if (forceWindowed)
+		{
+			// -windowed
+			hook::put<int>(hook::get_address<int*>(hook::get_pattern("41 3B CE 0F 85 FC 00 00 00 48 39 1D", 12)), 1);
+
+			// -borderless
+			hook::put<int>(hook::get_address<int*>(hook::get_pattern("48 1B DB 4C 39 3D ? ? ? ? 41", 6)), 1);
+		}
+	}
+#endif
+}
+
 static InitFunction initFunction([]()
 {
 	// initialize console arguments
@@ -1307,8 +1323,7 @@ static HookFunction hookFunction([] ()
 	//hook::jump(hook::get_call(hook::pattern("B9 CD 36 41 A8 E8").count(1).get(0).get<void>(5)), DebugBreakDo);
 
 	char* errorFunc = reinterpret_cast<char*>(hook::get_call(hook::pattern("B9 CD 36 41 A8 E8").count(1).get(0).get<void>(5)));
-	hook::set_call(&g_origError, errorFunc + 6);
-	hook::jump(errorFunc, ErrorDo);
+	hook::jump(hook::get_call(errorFunc + 6), ErrorDo);
 
 	//hook::nop(hook::pattern("B9 CD 36 41 A8 E8").count(1).get(0).get<void>(0x14), 5);
 	//hook::nop(hook::pattern("B9 CD 36 41 A8 E8").count(1).get(0).get<void>(5), 5);
@@ -1552,5 +1567,31 @@ static HookFunction hookFunction([] ()
 
 	// disable eventschedule.json refetching on failure
 	hook::nop(hook::get_pattern("80 7F 2C 00 75 09 48 8D 4F F8 E8", 10), 5);
+
+	// don't set pause on focus loss, force it to 0
+	{
+		auto location = hook::get_pattern<char>("0F 95 05 ? ? ? ? E8 ? ? ? ? 48 85 C0");
+		auto addy = hook::get_address<char*>(location + 3);
+		hook::put<char>(addy, 0);
+		hook::nop(location, 7);
+	}
+
+	// commandline overriding stuff (replace a nullsub near sysParam_init)
+	hook::call(hook::get_pattern("48 8B 54 24 48 8B 4C 24 40 E8", 25), OverrideArguments);
+
+	// early init command stuff
+	rage::OnInitFunctionStart.Connect([](rage::InitFunctionType type)
+	{
+		if (type == rage::InitFunctionType::INIT_CORE)
+		{
+			// run command-line initialization
+			se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
+
+			for (const auto& bit : g_argumentList)
+			{
+				console::GetDefaultContext()->ExecuteSingleCommandDirect(bit);
+			}
+		}
+	});
 });
 // C7 05 ? ? ? ? 07 00  00 00 E9

@@ -82,15 +82,19 @@ export class Server {
         this.currentPlayers = object.clients | 0;
         this.maxPlayers = object.svMaxclients | 0;
 
-        this.strippedname = this.hostname.replace(/\^[0-9]/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        this.strippedname = (this.hostname || '').replace(/\^[0-9]/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
         this.sortname = this.strippedname.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
         this.data = object;
         this.int = object;
 
-        const svg = Avatar.getFor(this.address);
+        if (!object.iconVersion) {
+            const svg = Avatar.getFor(this.address);
 
-        this.iconUri = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+            this.iconUri = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+        } else {
+            this.iconUri = `https://runtime.fivem.net/servers/icon/${address}/${object.iconVersion}.png`;
+        }
     }
 }
 

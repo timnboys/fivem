@@ -9,6 +9,8 @@
 extern bool g_hasCursor;
 extern POINT g_cursorPos;
 
+extern bool g_isDragging;
+
 extern rage::grcTexture* g_cursorTexture;
 
 static InitFunction initFunction([] ()
@@ -88,7 +90,7 @@ static InitFunction initFunction([] ()
 #ifndef GTA_FIVE
 					DrawImSprite(-0.5f, -0.5f, resX - 0.5f, resY - 0.5f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, &color, 0);
 #else
-					DrawImSprite(0, 0, resX, resY, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, &color, 0);
+					DrawImSprite(0, 0, resX, resY, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, &color, 0);
 #endif
 				}
 
@@ -127,6 +129,12 @@ static InitFunction initFunction([] ()
 					SetTextureGtaIm(g_cursorTexture);
 
 					uint32_t color = 0xFFFFFFFF;
+
+					if (g_isDragging)
+					{
+						color = 0xFFAAAAAA;
+					}
+
 					DrawImSprite(cursorPos.x, cursorPos.y, cursorPos.x + 32.0f, cursorPos.y + 32.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, &color, 0);
 				}
 

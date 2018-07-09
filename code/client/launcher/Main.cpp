@@ -35,6 +35,7 @@ extern "C" int wmainCRTStartup();
 
 void DoPreLaunchTasks();
 void NVSP_DisableOnStartup();
+bool ExecutablePreload_Init();
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
 {
@@ -368,6 +369,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 	}
 
 #ifdef GTA_FIVE
+	if (!ExecutablePreload_Init())
+	{
+		return 0;
+	}
+
 	// ensure game cache is up-to-date, and obtain redirection metadata from the game cache
 	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter;
 	auto redirectionData = UpdateGameCache();
@@ -391,9 +397,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
 				VS_FIXEDFILEINFO* fixedInfo = reinterpret_cast<VS_FIXEDFILEINFO*>(fixedInfoBuffer);
 				
-				if ((fixedInfo->dwFileVersionLS >> 16) != 1103)
+				if ((fixedInfo->dwFileVersionLS >> 16) != 1290)
 				{
-					MessageBox(nullptr, va(L"The found GTA executable (%s) has version %d.%d.%d.%d, but only 1.0.1103.2 is currently supported. Please obtain this version, and try again.",
+					MessageBox(nullptr, va(L"The found GTA executable (%s) has version %d.%d.%d.%d, but only 1.0.1290.2 is currently supported. Please obtain this version, and try again.",
 										   gameExecutable.c_str(),
 										   (fixedInfo->dwFileVersionMS >> 16),
 										   (fixedInfo->dwFileVersionMS & 0xFFFF),

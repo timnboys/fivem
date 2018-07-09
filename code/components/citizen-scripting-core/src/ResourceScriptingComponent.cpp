@@ -11,16 +11,25 @@
 #include "ResourceMetaDataComponent.h"
 #include "ResourceScriptingComponent.h"
 
+#ifndef IS_FXSERVER
+#include <ICoreGameInit.h>
+#endif
+
 #include <Error.h>
 
 namespace fx
 {
+static tbb::concurrent_unordered_map<int, std::function<void()>> g_onNetInitCbs;
+static std::atomic<int> g_onNetInitCbCtr;
+
+OMPtr<IScriptHost> GetScriptHostForResource(Resource* resource);
+
 ResourceScriptingComponent::ResourceScriptingComponent(Resource* resource)
 	: m_resource(resource)
 {
 	resource->OnStart.Connect([=] ()
 	{
-		// pre-emptively instantiate all scripting environments
+		// preemptively instantiate all scripting environments
 		std::vector<OMPtr<IScriptFileHandlingRuntime>> environments;
 
 		{
@@ -47,6 +56,7 @@ ResourceScriptingComponent::ResourceScriptingComponent(Resource* resource)
 		{
 			fwRefContainer<ResourceMetaDataComponent> metaData = resource->GetComponent<ResourceMetaDataComponent>();
 
+			auto sharedScripts = metaData->GetEntries("shared_script");
 			auto clientScripts = metaData->GetEntries(
 #ifdef IS_FXSERVER
 				"server_script"
@@ -60,12 +70,15 @@ ResourceScriptingComponent::ResourceScriptingComponent(Resource* resource)
 				OMPtr<IScriptFileHandlingRuntime> ptr = *it;
 				bool environmentUsed = false;
 
-				for (auto& clientScript : clientScripts)
+				for (auto& list : { sharedScripts, clientScripts })
 				{
-					if (ptr->HandlesFile(const_cast<char*>(clientScript.second.c_str())))
+					for (auto& script : list)
 					{
-						environmentUsed = true;
-						break;
+						if (ptr->HandlesFile(const_cast<char*>(script.second.c_str())))
+						{
+							environmentUsed = true;
+							break;
+						}
 					}
 				}
 
@@ -86,8 +99,6 @@ ResourceScriptingComponent::ResourceScriptingComponent(Resource* resource)
 			OMPtr<IScriptRuntime> ptr;
 			if (FX_SUCCEEDED(environment.As(&ptr)))
 			{
-				std::unique_lock<std::recursive_mutex> lock(m_scriptRuntimesLock);
-
 				ptr->SetParentObject(resource);
 
 				m_scriptRuntimes[ptr->GetInstanceId()] = ptr;
@@ -96,17 +107,43 @@ ResourceScriptingComponent::ResourceScriptingComponent(Resource* resource)
 
 		if (!m_scriptRuntimes.empty() || m_resource->GetName() == "_cfx_internal")
 		{
-			CreateEnvironments();
+			m_scriptHost = GetScriptHostForResource(m_resource);
+
+			auto loadScripts = [this]()
+			{
+				CreateEnvironments();
+
+				m_resource->OnCreate();
+			};
+
+#ifdef IS_FXSERVER
+			loadScripts();
+#else
+			if (Instance<ICoreGameInit>::Get()->HasVariable("networkInited"))
+			{
+				loadScripts();
+			}
+			else
+			{
+				int ctr = g_onNetInitCbCtr.fetch_add(1);
+				g_onNetInitCbs.emplace(ctr, loadScripts);
+
+				resource->OnStop.Connect([ctr]()
+				{
+					g_onNetInitCbs[ctr] = {};
+				});
+			}
+#endif
 		}
 	});
 
 	resource->OnTick.Connect([=] ()
 	{
-		for (auto& environment : CollectScriptRuntimes())
+		for (auto& environmentPair : m_scriptRuntimes)
 		{
 			OMPtr<IScriptTickRuntime> tickRuntime;
 
-			if (FX_SUCCEEDED(environment.As(&tickRuntime)))
+			if (FX_SUCCEEDED(environmentPair.second.As(&tickRuntime)))
 			{
 				tickRuntime->Tick();
 			}
@@ -115,62 +152,30 @@ ResourceScriptingComponent::ResourceScriptingComponent(Resource* resource)
 
 	resource->OnStop.Connect([=] ()
 	{
-		for (auto& environment : CollectScriptRuntimes())
+		if (m_resource->GetName() == "_cfx_internal")
 		{
-			environment->Destroy();
+			return;
 		}
 
-		std::unique_lock<std::recursive_mutex> lock(m_scriptRuntimesLock);
+		for (auto& environmentPair : m_scriptRuntimes)
+		{
+			environmentPair.second->Destroy();
+		}
+
 		m_scriptRuntimes.clear();
 	});
 }
 
-OMPtr<IScriptHost> GetScriptHostForResource(Resource* resource);
-
 void ResourceScriptingComponent::CreateEnvironments()
 {
-	m_scriptHost = GetScriptHostForResource(m_resource);
-	
-	for (auto& environment : CollectScriptRuntimes())
+
+	for (auto& environmentPair : m_scriptRuntimes)
 	{
-		auto hr = environment->Create(m_scriptHost.GetRef());
+		auto hr = environmentPair.second->Create(m_scriptHost.GetRef());
 
 		if (FX_FAILED(hr))
 		{
 			FatalError("Failed to create environment, hresult %x", hr);
-		}
-	}
-
-	// iterate over the runtimes and load scripts as requested
-	for (auto& environment : CollectScriptRuntimes())
-	{
-		OMPtr<IScriptFileHandlingRuntime> ptr;
-
-		fwRefContainer<ResourceMetaDataComponent> metaData = m_resource->GetComponent<ResourceMetaDataComponent>();
-		auto clientScripts = metaData->GetEntries(
-#ifdef IS_FXSERVER
-			"server_script"
-#else
-			"client_script"
-#endif
-		);
-		
-		if (FX_SUCCEEDED(environment.As(&ptr)))
-		{
-			bool environmentUsed = false;
-
-			for (auto& clientScript : clientScripts)
-			{
-				if (ptr->HandlesFile(const_cast<char*>(clientScript.second.c_str())))
-				{
-					result_t hr = ptr->LoadFile(const_cast<char*>(clientScript.second.c_str()));
-
-					if (FX_FAILED(hr))
-					{
-						trace("Failed to load script %s.\n", clientScript.second.c_str());
-					}
-				}
-			}
 		}
 	}
 
@@ -184,18 +189,18 @@ void ResourceScriptingComponent::CreateEnvironments()
 		// pre-cache event-handling runtimes
 		std::vector<OMPtr<IScriptEventRuntime>> eventRuntimes;
 
-		for (auto& environment : CollectScriptRuntimes())
+		for (auto& environmentPair : m_scriptRuntimes)
 		{
 			OMPtr<IScriptEventRuntime> ptr;
 
-			if (FX_SUCCEEDED(environment.As(&ptr)))
+			if (FX_SUCCEEDED(environmentPair.second.As(&ptr)))
 			{
 				eventRuntimes.push_back(ptr);
 			}
 		}
 
 		// add the event
-		eventComponent->OnTriggerEvent.Connect([=] (const std::string& eventName, const std::string& eventPayload, const std::string& eventSource, bool* eventCanceled)
+		eventComponent->OnTriggerEvent.Connect([=](const std::string& eventName, const std::string& eventPayload, const std::string& eventSource, bool* eventCanceled)
 		{
 			// invoke the event runtime
 			for (auto&& runtime : eventRuntimes)
@@ -209,13 +214,74 @@ void ResourceScriptingComponent::CreateEnvironments()
 			}
 		});
 	}
+
+	// iterate over the runtimes and load scripts as requested
+	for (auto& environmentPair : m_scriptRuntimes)
+	{
+		OMPtr<IScriptFileHandlingRuntime> ptr;
+
+		fwRefContainer<ResourceMetaDataComponent> metaData = m_resource->GetComponent<ResourceMetaDataComponent>();
+
+		auto sharedScripts = metaData->GetEntries("shared_script");
+		auto clientScripts = metaData->GetEntries(
+#ifdef IS_FXSERVER
+			"server_script"
+#else
+			"client_script"
+#endif
+		);
+
+		if (FX_SUCCEEDED(environmentPair.second.As(&ptr)))
+		{
+			bool environmentUsed = false;
+
+			for (auto& list : { sharedScripts, clientScripts }) {
+				for (auto& script : list)
+				{
+					if (ptr->HandlesFile(const_cast<char*>(script.second.c_str())))
+					{
+						result_t hr = ptr->LoadFile(const_cast<char*>(script.second.c_str()));
+
+						if (FX_FAILED(hr))
+						{
+							trace("Failed to load script %s.\n", script.second.c_str());
+						}
+					}
+				}
+			}
+		}
+	}
 }
 }
 
-static InitFunction initFunction([] ()
+static InitFunction initFunction([]()
 {
-	fx::Resource::OnInitializeInstance.Connect([] (fx::Resource* resource)
+	fx::Resource::OnInitializeInstance.Connect([](fx::Resource* resource)
 	{
 		resource->SetComponent<fx::ResourceScriptingComponent>(new fx::ResourceScriptingComponent(resource));
 	});
 });
+
+#ifndef IS_FXSERVER
+// HORRIBLE HACK
+
+#include <Hooking.h>
+static HookFunction hookFunction([] ()
+{
+	Instance<ICoreGameInit>::Get()->OnSetVariable.Connect([=](const std::string& variable, bool result)
+	{
+		if (result && variable == "networkInited")
+		{
+			for (auto& cb : fx::g_onNetInitCbs)
+			{
+				if (cb.second)
+				{
+					cb.second();
+				}
+			}
+
+			fx::g_onNetInitCbs.clear();
+		}
+	});
+});
+#endif

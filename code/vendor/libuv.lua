@@ -70,10 +70,16 @@ return {
 				'src/unix/linux-inotify.c',
 				'src/unix/linux-syscalls.c',
 				'src/unix/linux-syscalls.h',
+				
+				'src/unix/no-proctitle.c',
+				'src/unix/procfs-exepath.c',
+				'src/unix/sysinfo-loadavg.c',
+				'src/unix/sysinfo-memory.c',
+				
 			}
 
 		filter "system:windows"
-			defines { "_GNU_SOURCE" }
+			defines { "_GNU_SOURCE", "_WIN32_WINNT=0x0600" }
 
 			links { 'advapi32', 'iphlpapi', 'psapi', 'shell32', 'ws2_32', 'userenv' }
 

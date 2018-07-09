@@ -119,6 +119,63 @@ static void UnsetGameObjAndContinue(void* netobj, void* ped, bool a3, bool a4)
 	g_origUnsetGameObj(netobj, ped, a3, a4);
 }
 
+struct EntryPointInfo
+{
+	void* info;
+	void* animInfo;
+};
+
+struct VehicleLayoutInfo
+{
+	char pad[24];
+	EntryPointInfo* EntryPoints_data;
+	uint16_t EntryPoints_size;
+};
+
+static bool VehicleEntryPointValidate(VehicleLayoutInfo* info)
+{
+	for (size_t i = 0; i < info->EntryPoints_size; ++i)
+	{
+		if (info->EntryPoints_data[i].info == nullptr)
+		{
+			info->EntryPoints_size = 0;
+		}
+	}
+
+	return true;
+}
+
+#include <atPool.h>
+
+static void(*g_origUnloadMapTypes)(void*, uint32_t);
+
+void fwMapTypesStore__Unload(char* assetStore, uint32_t index)
+{
+	auto pool = (atPoolBase*)(assetStore + 56);
+	auto entry = pool->GetAt<char>(index);
+
+	if (entry != nullptr)
+	{
+		if (*(uintptr_t*)entry != 0)
+		{
+			g_origUnloadMapTypes(assetStore, index);
+		}
+		else
+		{
+			AddCrashometry("maptypesstore_workaround_2", "true");
+		}
+	}
+	else
+	{
+		AddCrashometry("maptypesstore_workaround", "true");
+	}
+}
+
+static int ReturnFalse()
+{
+	return 0;
+}
+
 static HookFunction hookFunction([] ()
 {
 	// corrupt TXD store reference crash (ped decal-related?)
@@ -402,4 +459,118 @@ static HookFunction hookFunction([] ()
 		hook::nop(location, 9);
 		hook::call_reg<1>(location, gadgetFixStub1.GetCode());
 	}
+
+	// initialization of vehiclelayouts.meta, VehicleLayoutInfos->EntryPoints validation
+	// causes ErrorDo signature because of null pointers - we'll just replace validation and force the array to be size 0
+	hook::jump(hook::get_pattern("44 0F B7 41 20 33 D2 45"), VehicleEntryPointValidate);
+
+	static uint64_t lastClothValue;
+	static char* lastClothPtr;
+
+	// cloth data in vehicle audio, validity check
+	// for crash sig @4316ee
+	static struct : jitasm::Frontend
+	{
+		static void ReportCrash()
+		{
+			static bool hasCrashedBefore = false;
+
+			if (!hasCrashedBefore)
+			{
+				hasCrashedBefore = true;
+
+				trace("WARNING: cloth data crash triggered (invalid pointer: %016llx, dummy: %016llx)\n", (uintptr_t)lastClothPtr, (uintptr_t)lastClothValue);
+
+				AddCrashometry("cloth_data_crash", "true");
+			}
+		}
+
+		static bool VerifyClothDataInst(char* pointer)
+		{
+			__try
+			{
+				lastClothValue = *(uint64_t*)(pointer + 0x1E0);
+
+				return true;
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				lastClothPtr = pointer;
+				ReportCrash();
+
+				return false;
+			}
+		}
+
+		void InternalMain() override
+		{
+			// save rcx and rax as these are our instruction operands
+			push(rcx);
+			push(rax);
+
+			// set up a stack frame for function calling
+			push(rbp);
+			mov(rbp, rsp);
+			sub(rsp, 32);
+
+			// call VerifyClothDataInst with rax (the pointer to probe)
+			mov(rcx, rax);
+			mov(rax, (uintptr_t)&VerifyClothDataInst);
+			call(rax);
+
+			// if 0, it's invalid
+			test(al, al);
+			jz("otherReturn");
+
+			// pop stack frame and execute original cmp instruction
+			add(rsp, 32);
+			pop(rbp);
+
+			pop(rax);
+			pop(rcx);
+
+			cmp(qword_ptr[rax + 0x1E0], rcx);
+
+			ret();
+
+			// pop stack frame and set ZF
+			L("otherReturn");
+
+			add(rsp, 32);
+			pop(rbp);
+
+			pop(rax);
+			pop(rcx);
+
+			xor(rdx, rdx);
+
+			ret();
+		}
+	} clothFixStub1;
+
+	{
+		auto location = hook::get_pattern("74 66 48 39 88 E0 01 00 00 74 5D", 2);
+		hook::nop(location, 7);
+		hook::call_reg<2>(location, clothFixStub1.GetCode());
+	}
+
+	// fix STAT_SET_INT saving for unknown-typed stats directly using stack garbage as int64
+	hook::put<uint16_t>(hook::get_pattern("FF C8 0F 84 85 00 00 00 83 E8 12 75 6A", 13), 0x7EEB);
+
+	// fwMapTypesStore double unloading workaround
+	MH_Initialize();
+	MH_CreateHook(hook::get_pattern("4C 63 C2 33 ED 46 0F B6 0C 00 8B 41 4C", -18), fwMapTypesStore__Unload, (void**)&g_origUnloadMapTypes);
+	MH_EnableHook(MH_ALL_HOOKS);
+
+	// disable TXD script resource unloading to work around a crash
+	{
+		auto vtbl = hook::get_address<void**>(hook::get_pattern("BA 07 00 00 00 48 8B D9 E8 ? ? ? ? 48 8D 05", 16));
+		hook::return_function(vtbl[5]);
+	}
+
+	// always create OffscreenBuffer3 so that it can't not exist at CRenderer init time (FIVEM-CLIENT-1290-F)
+	hook::put<uint8_t>(hook::get_pattern("4C 89 25 ? ? ? ? 75 0E 8B", 7), 0xEB);
+	
+	// test: disable 'classification' compute shader users by claiming it is unsupported
+	hook::jump(hook::get_pattern("84 C3 74 0D 83 C9 FF E8", -0x14), ReturnFalse);
 });

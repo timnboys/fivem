@@ -6,7 +6,11 @@
 					<img class="avatar" src="{{tweet.avatar}}">
 					<strong>{{tweet.user_displayname}}</strong>
 					<small>@{{tweet.user_screenname}}</small>
-					<small>{{tweet.date | amTimeAgo}}</small>
+					<small>
+						{{tweet.date | amTimeAgo}}
+						<span class="additional" data-balloon="Open tweet in browser." data-balloon-pos="right" (click)="openTweet(tweet.id)">{{tweet.date | date:'MM/dd/yyyy @ h:mma'}}</span>
+					</small>	
+					<small *ngIf="tweet.rt_displayname" class="rt">Retweeted by {{ tweet.rt_displayname }}</small>
 				</div>
 				<div class="message-body">
 					<article class="media">

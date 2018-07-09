@@ -38,7 +38,7 @@ static InitFunction initFunction([]()
 			return 5;
 		}
 
-		virtual void RunAuthentication(const std::shared_ptr<fx::Client>& clientPtr, const std::map<std::string, std::string>& postMap, const std::function<void(std::optional<std::string>)>& cb) override
+		virtual void RunAuthentication(const std::shared_ptr<fx::Client>& clientPtr, const std::map<std::string, std::string>& postMap, const std::function<void(boost::optional<std::string>)>& cb) override
 		{
 			auto it = postMap.find("authTicket");
 
@@ -80,7 +80,7 @@ static InitFunction initFunction([]()
 				{
 					cb({ fmt::sprintf("SteamIdProvider failure: %s", e.what()) });
 				}
-			}, cpr::Url{fmt::format("https://api.steampowered.com/ISteamUserAuth/AuthenticateUserTicket/v1/?key={0}&appid={1}&ticket={2}", STEAM_API_KEY, STEAM_APPID, it->second)});
+			}, cpr::Url{fmt::format("https://api.steampowered.com/ISteamUserAuth/AuthenticateUserTicket/v1/?key={0}&appid={1}&ticket={2}", STEAM_API_KEY, STEAM_APPID, it->second)}, cpr::VerifySsl{ false });
 		}
 	} idp;
 

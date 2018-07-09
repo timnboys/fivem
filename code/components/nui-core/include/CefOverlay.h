@@ -51,6 +51,7 @@ namespace nui
 
 	void OVERLAY_DECL CreateFrame(fwString frameName, fwString frameURL);
 	void OVERLAY_DECL DestroyFrame(fwString frameName);
+	bool OVERLAY_DECL HasFrame(const std::string& frameName);
 	void OVERLAY_DECL SignalPoll(fwString frameName);
 
 	void OVERLAY_DECL GiveFocus(bool hasFocus, bool hasCursor = false);
@@ -65,6 +66,16 @@ namespace nui
 	OVERLAY_DECL CefBrowser* GetBrowser();
 
 	bool OnPreLoadGame(void* cefSandbox);
+
+	// window API
+	OVERLAY_DECL CefBrowser* GetNUIWindowBrowser(fwString windowName);
+
+	OVERLAY_DECL void CreateNUIWindow(fwString windowName, int width, int height, fwString windowURL);
+	OVERLAY_DECL void DestroyNUIWindow(fwString windowName);
+	OVERLAY_DECL void ExecuteWindowScript(const std::string& windowName, const std::string& scriptBit);
+	OVERLAY_DECL void SetNUIWindowURL(fwString windowName, fwString url);
+
+	OVERLAY_DECL rage::grcTexture* GetWindowTexture(fwString windowName);
 
 	extern
 		OVERLAY_DECL

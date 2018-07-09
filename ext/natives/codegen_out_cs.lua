@@ -137,6 +137,8 @@ local function printReturnType(type)
 		else
 			return 'int'
 		end
+	elseif type.nativeType == 'object' then
+		return 'dynamic'
 	else
 		return 'int'
 	end
@@ -168,8 +170,8 @@ local function formatDocString(native)
 	l = l .. t .. '/// </summary>\n'
 
 	if d.hasParams then
-		for n, v in pairs(d.params) do
-			l = l ..t .. '/// <param name="' .. n .. '">' .. v .. '</param>\n'
+		for _, v in ipairs(d.params) do
+			l = l ..t .. '/// <param name="' .. v[1] .. '">' .. v[2] .. '</param>\n'
 		end
 	end
 
@@ -194,7 +196,11 @@ local function parseArgument(argument, native)
 	elseif argument.type.nativeType == 'string' then
 		argType = 'string'
 	elseif argument.type.nativeType == 'int' then
-		argType = 'int'
+		if argument.type.subType == 'long' then
+			argType = 'long'
+		else
+			argType = 'int'
+		end
 	elseif argument.type.nativeType == 'float' then
 		argType = 'float'
 	elseif argument.type.nativeType == 'bool' then

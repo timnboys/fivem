@@ -9,7 +9,7 @@
 	top: 0;
 	left: 0;
 	right: 0;
-    height: $appServersItemHeight;
+    height: $appServersItemHeight * 1.2;
 
 	background: rgba($bgColour, .5);
 	backdrop-filter: blur(5px);
@@ -18,10 +18,10 @@
 	z-index: 20;
 
 	div {
-		height: $appServersItemHeight;
-		font-size: 1.3rem;
+		height: $appServersItemHeight * 1.2;
+		font-size: $fontSize*0.8;
 		font-weight: 100;
-		line-height: $appServersItemHeight;
+		line-height: $appServersItemHeight * 1.2;
 
 		color: $textColour;
 		text-transform: lowercase;
@@ -39,7 +39,7 @@
 		}
 
 		&.name {
-			padding-left: $padding*$multiplier;
+			padding-left: $padding*$multiplier*0.5;
 			text-align: left;
 		}
 
@@ -48,6 +48,10 @@
 		&.players,
 		&.actions {
 			padding-right: $padding*$multiplier;
+		}
+
+		&.name span::after {
+			left: calc(100% + 5px);
 		}
 
 		span {
@@ -62,7 +66,7 @@
 			height: 14px;
 
 			top: calc(50% - 5px);
-			left: -18px;
+			left: -15px;
 
 			transform: rotate(0deg);
 			transition: all .2s ease;
@@ -75,12 +79,12 @@
 
 		span.sortedAscending::after {
 			opacity: 1;
-			transform: rotate(180deg);
 		}
 
 		span.sortedDescending::after
 		{
 			opacity: 1;
+			transform: rotate(180deg);
 			transition: all .2s ease;
 		}
 	}
