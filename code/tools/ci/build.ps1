@@ -8,7 +8,7 @@ param (
     $SaveDir = "C:\f\save",
 
     [string]
-    $GitRepo = "git@git.internal.fivem.net:cfx/cfx-client.git",
+    $GitRepo = "git@github.com:timnboys/fivem.git",
 
     [string]
     $Branch = "master",
@@ -48,26 +48,6 @@ function Invoke-BatchFile
    Remove-Item $tempFile
 }
 
-function Invoke-WebHook
-{
-    param([string]$Text)
-
-    $payload = @{
-	    "text" = $Text;
-    }
-
-    if (!$env:TG_WEBHOOK)
-    {
-        return
-    }
-
-    iwr -UseBasicParsing -Uri $env:TG_WEBHOOK -Method POST -Body (ConvertTo-Json -Compress -InputObject $payload) | out-null
-
-    $payload.text += " <:mascot:295575900446130176>"#<@&297070674898321408>"
-
-    iwr -UseBasicParsing -Uri $env:DISCORD_WEBHOOK -Method POST -Body (ConvertTo-Json -Compress -InputObject $payload) | out-null
-}
-
 $inCI = $false
 $Triggerer = "$env:USERDOMAIN\$env:USERNAME"
 $UploadBranch = "canary"
@@ -105,7 +85,7 @@ if ($env:CI) {
             git config user.name citizenfx-ci
             git config user.email pr@fivem.net
     		git tag -a $Tag $env:CI_COMMIT_SHA -m "${env:CI_COMMIT_REF_NAME}_$Tag"
-            git remote add github_tag https://$env:GITHUB_CRED@github.com/citizenfx/fivem.git
+            git remote add github_tag https://$env:GITHUB_CRED@github.com/timnboys/fivem.git
             git push github_tag $Tag
             git remote remove github_tag
 
@@ -148,7 +128,6 @@ if (!($env:BOOST_ROOT)) {
 
 if (!$DontBuild)
 {
-    Invoke-WebHook "Bloop, building a new $env:CI_PROJECT_NAME $UploadBranch build, triggered by $Triggerer"
 
     Write-Host "[checking if repository is latest version]" -ForegroundColor DarkMagenta
 
@@ -364,28 +343,6 @@ if (!$DontBuild -and !$IsServer) {
     }
 
     Invoke-Expression "& $WorkRootDir\tools\ci\xz.exe -9 CitizenFX.exe"
-
-    Invoke-WebRequest -Method POST -UseBasicParsing "https://crashes.fivem.net/management/add-version/1.3.0.$GameVersion"
-
-    $uri = 'https://sentry.fivem.net/api/0/organizations/citizenfx/releases/'
-    $json = @{
-    	version = "1.3.0.$GameVersion"
-    	refs = @(
-    		@{
-    			repository = 'citizenfx/fivem'
-    			commit = $env:CI_COMMIT_SHA
-    		}
-    	)
-    	projects = @("fivem-client-1290")
-    } | ConvertTo-Json
-
-    $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
-    $headers.Add('Authorization', "Bearer $env:SENTRY_TOKEN")
-
-    Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $json -ContentType 'application/json'
-
-    $LauncherLength = (Get-ItemProperty CitizenFX.exe.xz).Length
-    "$LauncherVersion $LauncherLength" | Out-File -Encoding ascii version.txt
 }
 
 if (!$DontUpload) {
@@ -409,19 +366,4 @@ if (!$DontUpload) {
     Set-Location (Split-Path -Parent $WorkDir)
 
     rsync -r -a -v -e "$env:RSH_COMMAND" $BaseRoot/upload/ $env:SSH_TARGET
-    Invoke-WebHook "Built and uploaded a new $env:CI_PROJECT_NAME version ($GameVersion) to $UploadBranch! Go and test it!"
-
-	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-    # clear cloudflare cache
-    $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
-    $headers.Add("X-Auth-Email", $env:CLOUDFLARE_EMAIL)
-    $headers.Add("X-Auth-Key", $env:CLOUDFLARE_KEY)
-
-    $uri = 'https://api.cloudflare.com/client/v4/zones/783470409082113ad973c9bb845b62e5/purge_cache'
-    $json = @{
-        purge_everything=$true
-    } | ConvertTo-Json
-
-    Invoke-RestMethod -Uri $uri -Method Delete -Headers $headers -Body $json -ContentType 'application/json'
 }
