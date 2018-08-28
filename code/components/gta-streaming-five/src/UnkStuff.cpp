@@ -406,6 +406,9 @@ static void AdjustLimits()
 	g_drawableStore = hook::get_address<char*>(hook::get_pattern("74 16 8B 17 48 8D 0D ? ? ? ? 41 B8 02 00 00 00", 7));
 	g_dwdStore = hook::get_address<char*>(hook::get_pattern("EB 7B 48 8D 54 24 40 48 8D 0D", 10));
 
+	// not needed on 1365 anymore
+	return;
+
 	MH_Initialize();
 	MH_CreateHook(hook::get_pattern("41 8B 18 44 0F B7 81 80 00 00 00", -5), GetIndexByKeyStub, (void**)&g_origGetIndexByKey);
 	MH_CreateHook(hook::get_pattern("48 89 7C 24 10 44 0F B7 49 10", -5)/*(void*)0x1414F9E68*/, StoreInsert, (void**)&g_origStoreInsert);
@@ -513,6 +516,12 @@ struct GetRcdDebugInfoExtension
 
 static void ErrorInflateFailure(char* ioData, char* requestData)
 {
+	if (streaming::IsStreamerShuttingDown())
+	{
+		trace("Streamer shutdown: ignoring inflate() failure!\n");
+		return;
+	}
+
 	uint32_t handle = *(uint32_t*)(requestData + 4);
 	uint8_t* nextIn = *(uint8_t**)(ioData + 8);
 	uint32_t availIn = *(uint32_t*)(ioData);

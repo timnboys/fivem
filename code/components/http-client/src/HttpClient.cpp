@@ -125,6 +125,8 @@ HttpClient::HttpClient(const wchar_t* userAgent /* = L"CitizenFX/1" */)
 	{
 		using namespace std::literals;
 
+		SetThreadName(-1, "[Cfx] HttpClient Thread");
+
 		int lastRunning = 0;
 
 		do 
@@ -353,6 +355,34 @@ public:
 			{
 				curl_easy_setopt(request->curlHandle, CURLOPT_STREAM_WEIGHT, long(newWeight));
 			}
+		});
+	}
+
+	virtual void Abort() override
+	{
+		auto request = m_request;
+
+		request->impl->cbsToRun.push([request]()
+		{
+			auto curl = request->curlHandle;
+			auto impl = request->impl;
+
+			//Request has completed and curl has been cleaned up.
+			if (curl == nullptr)
+				return;
+
+			// delete the data pointer
+			char* dataPtr;
+			curl_easy_getinfo(curl, CURLINFO_PRIVATE, &dataPtr);
+
+			auto data = reinterpret_cast<std::shared_ptr<CurlData>*>(dataPtr);
+			(*data)->curlHandle = nullptr;
+
+			delete data;
+
+			// remove and delete the handle
+			curl_multi_remove_handle(impl->multi, curl);
+			curl_easy_cleanup(curl);
 		});
 	}
 };

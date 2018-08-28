@@ -144,21 +144,22 @@ struct NodeWrapper : public NodeBase
 	
 	virtual bool Parse(SyncParseState& state) override
 	{
-		auto isWrite = state.buffer.ReadBit();
+		/*auto isWrite = state.buffer.ReadBit();
 
 		if (!isWrite)
 		{
 			return true;
-		}
+		}*/
 
-		auto length = state.buffer.Read<uint32_t>(11);
 		auto curBit = state.buffer.GetCurrentBit();
 
 		if (shouldRead(state, TIds::GetIds()))
 		{
 			// read into data array
+			auto length = state.buffer.Read<uint32_t>(11);
 			auto endBit = state.buffer.GetCurrentBit();
-			auto leftoverLength = length - (endBit - curBit);
+			//auto leftoverLength = length - (endBit - curBit);
+			auto leftoverLength = length;
 
 			auto oldData = data;
 
@@ -177,9 +178,9 @@ struct NodeWrapper : public NodeBase
 
 				ackedPlayers.reset();
 			}
-		}
 
-		state.buffer.SetCurrentBit(curBit + length);
+			state.buffer.SetCurrentBit(endBit + length);
+		}
 
 		return true;
 	}
@@ -356,6 +357,10 @@ struct CPedGameStateDataNode
 	{
 		auto bool1 = state.buffer.ReadBit();
 		auto bool2 = state.buffer.ReadBit();
+		auto bool3 = state.buffer.ReadBit();
+		auto bool4 = state.buffer.ReadBit();
+		auto bool5 = state.buffer.ReadBit();
+		auto bool6 = state.buffer.ReadBit();
 		auto arrestState = state.buffer.Read<int>(1);
 		auto deathState = state.buffer.Read<int>(2);
 
@@ -469,7 +474,7 @@ struct CSubmarineGameStateDataNode { bool Parse(SyncParseState& state) { return 
 struct CSubmarineControlDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CPlayerCreationDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CPlayerGameStateDataNode { bool Parse(SyncParseState& state) { return true; } };
-struct CPlayerAppearanceDataNode { bool Parse(SyncParseState& state) { trace("PlayerAppearanceDataNode!\n"); return true; } };
+struct CPlayerAppearanceDataNode { bool Parse(SyncParseState& state) { /*trace("PlayerAppearanceDataNode!\n");*/ return true; } };
 struct CPlayerPedGroupDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CPlayerAmbientModelStreamingNode { bool Parse(SyncParseState& state) { return true; } };
 struct CPlayerGamerDataNode { bool Parse(SyncParseState& state) { return true; } };

@@ -21,6 +21,8 @@
 
 #include <ICoreGameInit.h>
 
+#include <MinHook.h>
+
 static void(*dataFileMgr__loadDat)(void*, const char*, bool);
 static void(*dataFileMgr__loadDefDat)(void*, const char*, bool);
 
@@ -182,7 +184,7 @@ static hook::cdecl_stub<void(void*)> _initManifestChunk([]()
 
 static hook::cdecl_stub<void(void*)> _loadManifestChunk([]()
 {
-	return hook::get_pattern("33 FF 4C 8B E9 BB FF FF 00 00", -0x2D);
+	return hook::get_call(hook::get_pattern("45 38 AE C0 00 00 00 0F 95 C3 E8", -5));
 });
 
 static hook::cdecl_stub<void(void*)> _clearManifestChunk([]()
@@ -381,6 +383,12 @@ static CDataFileMountInterface* LookupDataFileMounter(const std::string& type)
 		return &g_staticRpfMounter;
 	}
 
+	// don't allow TEXTFILE_METAFILE entries (these don't work and will fail to unload)
+	if (fileType == 160) // TEXTFILE_METAFILE 
+	{
+		return nullptr;
+	}
+
 	return g_dataFileMounters[fileType];
 }
 
@@ -483,21 +491,30 @@ namespace streaming
 	void DLL_EXPORT RemoveDataFileFromLoadList(const std::string& type, const std::string& path)
 	{
 		auto dataFilePair = std::make_pair(type, path);
+
+		if (std::find(g_loadedDataFiles.begin(), g_loadedDataFiles.end(), dataFilePair) == g_loadedDataFiles.end())
+		{
+			return;
+		}
+		
 		std::remove(g_loadedDataFiles.begin(), g_loadedDataFiles.end(), dataFilePair);
 
-		auto singlePair = { dataFilePair };
-
-		HandleDataFileList(singlePair, [] (CDataFileMountInterface* mounter, DataFileEntry& entry)
+		if (Instance<ICoreGameInit>::Get()->GetGameLoaded())
 		{
-			__try
+			auto singlePair = { dataFilePair };
+
+			HandleDataFileList(singlePair, [](CDataFileMountInterface* mounter, DataFileEntry& entry)
 			{
-				return mounter->UnmountFile(&entry);
-			}
-			__except (FilterUnmountOperation(entry))
-			{
-				
-			}
-		}, "removing");
+				__try
+				{
+					return mounter->UnmountFile(&entry);
+				}
+				__except (FilterUnmountOperation(entry))
+				{
+
+				}
+			}, "removing");
+		}
 	}
 }
 
@@ -506,11 +523,34 @@ static hook::cdecl_stub<rage::fiCollection*()> getRawStreamer([]()
 	return hook::get_call(hook::get_pattern("48 8B D3 4C 8B 00 48 8B C8 41 FF 90 ? 01 00 00", -5));
 });
 
+#include <unordered_set>
+
 static std::set<std::tuple<std::string, std::string>> g_customStreamingFiles;
 static std::set<std::string> g_customStreamingFileRefs;
 static std::map<std::string, std::vector<std::string>, std::less<>> g_customStreamingFilesByTag;
 static std::unordered_map<int, std::list<uint32_t>> g_handleStack;
 std::unordered_map<int, std::string> g_handlesToTag;
+
+static std::unordered_set<int> g_ourIndexes;
+
+static std::string GetBaseName(const std::string& name)
+{
+	std::string retval = name;
+
+	std::string policyVal;
+
+	if (Instance<ICoreGameInit>::Get()->GetData("policy", &policyVal))
+	{
+#ifndef _DEBUG
+		if (policyVal.find("[subdir_file_mapping]") != std::string::npos)
+#endif
+		{
+			std::replace(retval.begin(), retval.end(), '^', '/');
+		}
+	}
+
+	return retval;
+}
 
 static void LoadStreamingFiles(bool earlyLoad)
 {
@@ -528,7 +568,7 @@ static void LoadStreamingFiles(bool earlyLoad)
 			continue;
 		}
 
-		auto baseName = std::string(slashPos + 1);
+		auto baseName = GetBaseName(std::string(slashPos + 1));
 		auto nameWithoutExt = baseName.substr(0, baseName.find_last_of('.'));
 
 		const char* extPos = strrchr(baseName.c_str(), '.');
@@ -570,6 +610,8 @@ static void LoadStreamingFiles(bool earlyLoad)
 			// RegisterStreamingFile will still work if one exists as long as the handle remains 0
 			uint32_t strId;
 			strModule->GetOrCreate(&strId, nameWithoutExt.c_str());
+
+			g_ourIndexes.insert(strId + strModule->baseIdx);
 
 			// if the asset is already registered...
 			if (cstreaming->Entries[strId + strModule->baseIdx].handle != 0)
@@ -883,15 +925,27 @@ void DLL_EXPORT CfxCollection_AddStreamingFileByTag(const std::string& tag, cons
 
 void DLL_EXPORT CfxCollection_RemoveStreamingTag(const std::string& tag)
 {
+	// ensure that we can call into game code here
+	// #FIXME: should we not always be on the main thread?!
+	rage::sysMemAllocator::UpdateAllocatorValue();
+
 	for (auto& file : g_customStreamingFilesByTag[tag])
 	{
 		// get basename ('thing.ytd') and asset name ('thing')
-		auto baseName = std::string(strrchr(file.c_str(), '/') + 1);
+		auto baseName = GetBaseName(std::string(strrchr(file.c_str(), '/') + 1));
 		auto nameWithoutExt = baseName.substr(0, baseName.find_last_of('.'));
+
+		// get dot position and skip if no dot
+		auto dotPos = strrchr(baseName.c_str(), '.');
+
+		if (!dotPos)
+		{
+			continue;
+		}
 
 		// get CStreaming instance and associated streaming module
 		auto cstreaming = streaming::Manager::GetInstance();
-		auto strModule = cstreaming->moduleMgr.GetStreamingModule(strrchr(baseName.c_str(), '.') + 1);
+		auto strModule = cstreaming->moduleMgr.GetStreamingModule(dotPos + 1);
 
 		if (strModule)
 		{
@@ -903,6 +957,9 @@ void DLL_EXPORT CfxCollection_RemoveStreamingTag(const std::string& tag)
 
 			if (strId != -1)
 			{
+				// remove from our index set
+				g_ourIndexes.erase(strId + strModule->baseIdx);
+
 				// erase existing stack entry
 				auto& handleData = g_handleStack[strId + strModule->baseIdx];
 
@@ -923,6 +980,12 @@ void DLL_EXPORT CfxCollection_RemoveStreamingTag(const std::string& tag)
 				}
 				else
 				{
+					// release the object if it was likely to have been faked
+					if (streaming::IsStreamerShuttingDown())
+					{
+						streaming::Manager::GetInstance()->ReleaseObject(strId + strModule->baseIdx);
+					}
+
 					// TODO: fully delete the streaming object from the module/streamer
 					g_customStreamingFileRefs.erase(baseName);
 					entry.handle = 0;
@@ -945,7 +1008,7 @@ static void UnloadDataFiles()
 	{
 		trace("Unloading data files (%d entries)\n", g_loadedDataFiles.size());
 
-		HandleDataFileList(g_dataFiles, [] (CDataFileMountInterface* mounter, DataFileEntry& entry)
+		HandleDataFileList(g_loadedDataFiles, [] (CDataFileMountInterface* mounter, DataFileEntry& entry)
 		{
 			return mounter->UnmountFile(&entry);
 		}, "unloading");
@@ -1004,10 +1067,173 @@ static const char* pgRawStreamer__GetEntryNameToBuffer(pgRawStreamer* streamer, 
 	return buffer;
 }
 
+static void DisplayRawStreamerError [[noreturn]] (pgRawStreamer* streamer, uint16_t index)
+{
+	auto streamingMgr = streaming::Manager::GetInstance();
+
+	uint32_t attemptIndex = (((rage::fiCollection*)streamer)->GetCollectionId() << 16) | index;
+	std::string extraData;
+
+	for (size_t i = 0; i < streamingMgr->numEntries; i++)
+	{
+		const auto& entry = streamingMgr->Entries[i];
+
+		if (entry.handle == attemptIndex)
+		{
+			std::string tag = g_handlesToTag[entry.handle];
+
+			extraData += fmt::sprintf("Streaming tag: %s\n", tag);
+			extraData += fmt::sprintf("File name: %s\n", streaming::GetStreamingNameForIndex(i));
+			extraData += fmt::sprintf("Handle stack size: %d\n", g_handleStack[i].size());
+			extraData += fmt::sprintf("Tag exists: %s\n", g_customStreamingFilesByTag.find(tag) != g_customStreamingFilesByTag.end() ? "yes" : "no");
+		}
+	}
+
+	FatalError("Invalid pgRawStreamer call - fileName == NULL.\nStreaming index: %d\n%s", index, extraData);
+}
+
+static int64_t(*g_origOpenCollectionEntry)(pgRawStreamer* streamer, uint16_t index, uint64_t* ptr);
+
+static int64_t pgRawStreamer__OpenCollectionEntry(pgRawStreamer* streamer, uint16_t index, uint64_t* ptr)
+{
+	const char* fileName = streamer->m_entries[index >> 10][index & 0x3FF].fileName;
+
+	if (fileName == nullptr)
+	{
+		DisplayRawStreamerError(streamer, index);
+	}
+
+	return g_origOpenCollectionEntry(streamer, index, ptr);
+}
+
+static int64_t(*g_origGetEntry)(pgRawStreamer* streamer, uint16_t index);
+
+static int64_t pgRawStreamer__GetEntry(pgRawStreamer* streamer, uint16_t index)
+{
+	const char* fileName = streamer->m_entries[index >> 10][index & 0x3FF].fileName;
+
+	if (fileName == nullptr)
+	{
+		DisplayRawStreamerError(streamer, index);
+	}
+
+	return g_origGetEntry(streamer, index);
+}
+
+static bool g_unloadingCfx;
+
+namespace streaming
+{
+	bool IsStreamerShuttingDown()
+	{
+		return g_unloadingCfx;
+	}
+}
+
+static void* g_streamingInternals;
+
+static hook::cdecl_stub<void()> _waitUntilStreamerClear([]()
+{
+	return hook::get_call(hook::get_pattern("80 A1 7A 01 00 00 FE 8B EA", 12));
+});
+
+static hook::cdecl_stub<void(void*)> _resyncStreamers([]()
+{
+	return hook::get_call(hook::get_pattern("80 A1 7A 01 00 00 FE 8B EA", 24));
+});
+
+static hook::cdecl_stub<void()> _unloadTextureLODs([]()
+{
+	// there's two of these, both seem to do approximately the same thing, but the first one we want
+	return hook::get_pattern("48 85 DB 75 1B 8D 47 01 49 8D", -0x84);
+});
+
+static void SafelyDrainStreamer()
+{
+	g_unloadingCfx = true;
+
+	trace("Shutdown: waiting for streaming to finish\n");
+
+	_waitUntilStreamerClear();
+
+	trace("Shutdown: updating GTA streamer state\n");
+
+	_resyncStreamers(g_streamingInternals);
+
+	trace("Shutdown: unloading texture LODs\n");
+
+	_unloadTextureLODs();
+
+	trace("Shutdown: streamer tasks done\n");
+}
+
+static void(*g_origAddMapBoolEntry)(void* map, int* index, bool* value);
+
+void WrapAddMapBoolEntry(void* map, int* index, bool* value)
+{
+	// don't allow this for any files of our own
+	if (g_ourIndexes.find(*index) == g_ourIndexes.end())
+	{
+		g_origAddMapBoolEntry(map, index, value);
+	}
+}
+
 #include <GameInit.h>
 
 static HookFunction hookFunction([] ()
 {
+	// process streamer-loaded resource: check 'free instantly' flag even if no dependencies exist (change jump target)
+	*hook::get_pattern<int8_t>("4C 63 C0 85 C0 7E 54 48 8B", 6) = 0x25;
+
+	// same function: stub to change free-instantly flag if needed by bypass streaming
+	static struct : jitasm::Frontend
+	{
+		static bool ShouldRequestBeAllowed()
+		{
+			if (streaming::IsStreamerShuttingDown())
+			{
+				return false;
+			}
+
+			return true;
+		}
+
+		void InternalMain() override
+		{
+			sub(rsp, 0x28);
+
+			// restore rcx as the call stub used this
+			mov(rcx, r14);
+
+			// call the original function that's meant to be called
+			mov(rax, qword_ptr[rax + 0xA8]);
+			call(rax);
+
+			// save the result in a register (r12 is used as output by this function)
+			mov(r12, rax);
+
+			// store the streaming request in a1
+			mov(rcx, rsi);
+			mov(rax, (uintptr_t)&ShouldRequestBeAllowed);
+			call(rax);
+
+			// perform a switcharoo of rax and r12
+			// (r12 is the result the game wants, rax is what we want in r12)
+			xchg(r12, rax);
+
+			add(rsp, 0x28);
+			ret();
+		}
+	} streamingBypassStub;
+
+	{
+		auto location = hook::get_pattern("45 8A E7 FF 90 A8 00 00 00");
+		hook::nop(location, 9);
+		hook::call_rcx(location, streamingBypassStub.GetCode());
+	}
+
+	g_streamingInternals = hook::get_address<void*>(hook::get_pattern("80 A1 7A 01 00 00 FE 8B EA", 20));
+
 	manifestChunkPtr = hook::get_address<void*>(hook::get_pattern("83 F9 08 75 43 48 8D 0D", 8));
 
 	// level load
@@ -1060,6 +1286,17 @@ static HookFunction hookFunction([] ()
 
 	OnKillNetworkDone.Connect([]()
 	{
+		// safely drain the RAGE streamer before we unload everything
+		SafelyDrainStreamer();
+
+		g_unloadingCfx = false;
+	}, 99900);
+
+	Instance<ICoreGameInit>::Get()->OnShutdownSession.Connect([]()
+	{
+		// safely drain the RAGE streamer before we unload everything
+		SafelyDrainStreamer();
+
 		UnloadDataFiles();
 
 		std::set<std::string> tags;
@@ -1074,15 +1311,8 @@ static HookFunction hookFunction([] ()
 			CfxCollection_RemoveStreamingTag(tag);
 		}
 
-		/*if (Instance<ICoreGameInit>::Get()->GetGameLoaded())
-		{
-			// toggle map group again?
-			g_enableContentGroup(*g_extraContentManager, 0xBCC89179); // GROUP_MAP
-			g_disableContentGroup(*g_extraContentManager, 0xBCC89179);
-
-			g_clearContentCache(0);
-		}*/
-	}, 99900);
+		g_unloadingCfx = false;
+	}, -9999);
 
 	OnMainGameFrame.Connect([=]()
 	{
@@ -1131,4 +1361,17 @@ static HookFunction hookFunction([] ()
 
 	// support CfxRequest for pgRawStreamer
 	hook::jump(hook::get_pattern("4D 63 C1 41 8B C2 41 81 E2 FF 03 00 00", -0xD), pgRawStreamer__GetEntryNameToBuffer);
+
+	// do not ever register our streaming files as part of DLC packfile dependencies
+	{
+		auto location = hook::get_pattern("48 8B CE C6 85 B8 00 00 00 01 89 44 24 20 E8", 14);
+		hook::set_call(&g_origAddMapBoolEntry, location);
+		hook::call(location, WrapAddMapBoolEntry);
+	}
+
+	// debug hook for pgRawStreamer::OpenCollectionEntry
+	MH_Initialize();
+	MH_CreateHook(hook::get_pattern("8B D5 81 E2", -0x24), pgRawStreamer__OpenCollectionEntry, (void**)&g_origOpenCollectionEntry);
+	MH_CreateHook(hook::get_pattern("0F B7 C3 48 8B 5C 24 30 8B D0 25 FF", -0x14), pgRawStreamer__GetEntry, (void**)&g_origGetEntry);
+	MH_EnableHook(MH_ALL_HOOKS);
 });

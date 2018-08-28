@@ -12,6 +12,11 @@
 #include <nutsnbolts.h>
 #include <ICoreGameInit.h>
 
+#include <MinHook.h>
+
+#include <scrEngine.h>
+#include <ScriptEngine.h>
+
 #include <Error.h>
 
 NetLibrary* g_netLibrary;
@@ -312,6 +317,11 @@ static OnlineAddress* g_onlineAddress;
 
 OnlineAddress* GetOurOnlineAddressRaw()
 {
+	if (!g_onlineAddress)
+	{
+		return nullptr;
+	}
+
 	g_onlineAddress->ip1 = (g_netLibrary->GetServerNetID() ^ 0xFEED) | 0xc0a80000;
 	g_onlineAddress->port1 = 6672;
 
@@ -550,7 +560,7 @@ struct
 			}
 			else
 			{
-				GlobalError("Could not connect to session provider.");
+				GlobalError("Could not connect to session provider. This may happen when you recently updated, but other players in the server have not. Alternately, the server accepted you, despite being full. Please try again later, or try a different server.");
 				state = HS_IDLE;
 			}
 		}
@@ -593,6 +603,7 @@ static void SendMetric(const std::string& metric);
 
 static std::string g_globalServerAddress;
 
+void Policy_BindNetLibrary(NetLibrary*);
 void MumbleVoice_BindNetLibrary(NetLibrary*);
 void ObjectIds_BindNetLibrary(NetLibrary*);
 
@@ -605,6 +616,8 @@ static HookFunction initFunction([]()
 	TheClones->BindNetLibrary(g_netLibrary);
 
 	MumbleVoice_BindNetLibrary(g_netLibrary);
+
+	Policy_BindNetLibrary(g_netLibrary);
 
 	ObjectIds_BindNetLibrary(g_netLibrary);
 
@@ -662,7 +675,10 @@ static HookFunction initFunction([]()
 	OnGameFrame.Connect([]()
 	{
 		GetOurOnlineAddressRaw();
+	});
 
+	OnCriticalGameFrame.Connect([]()
+	{
 		g_netLibrary->RunFrame();
 	});
 
@@ -717,9 +733,9 @@ static HookFunction initFunction([]()
 		{
 			gameLoaded = false;
 			
-			if (*g_dlcMountCount != 117)
+			if (*g_dlcMountCount != 122)
 			{
-				GlobalError("DLC count mismatch - %d DLC mounts exist locally, but %d are expected. Please check that you have installed all core game updates and try again.", *g_dlcMountCount, 117);
+				GlobalError("DLC count mismatch - %d DLC mounts exist locally, but %d are expected. Please check that you have installed all core game updates and try again.", *g_dlcMountCount, 122);
 
 				return;
 			}
@@ -1249,6 +1265,24 @@ static void WINAPI ExitProcessReplacement(UINT exitCode)
 	TerminateProcess(GetCurrentProcess(), exitCode);
 }
 
+static void(*_origLoadMeta)(const char*, bool, uint32_t);
+
+static void WaitForScAndLoadMeta(const char* fn, bool a2, uint32_t a3)
+{
+	while (_isScWaitingForInit())
+	{
+		// 1365
+		((void(*)())0x1400067AC)();
+		((void(*)())0x1407D60E4)();
+		((void(*)())0x140025CFC)();
+		((void(*)())0x14156494C)();
+
+		Sleep(0);
+	}
+
+	return _origLoadMeta(fn, a2, a3);
+}
+
 static HookFunction hookFunction([] ()
 {
 	/*OnPostFrontendRender.Connect([] ()
@@ -1651,7 +1685,9 @@ static HookFunction hookFunction([] ()
 	hook::put<uint8_t>(hook::get_pattern("F6 44 07 04 02 74 7A", 4), 4); // check persistent sp flag -> persistent mp
 
 	// exitprocess -> terminateprocess
-	hook::iat("kernel32.dll", ExitProcessReplacement, "ExitProcess");
+	MH_Initialize();
+	MH_CreateHookApi(L"kernel32.dll", "ExitProcess", ExitProcessReplacement, nullptr);
+	MH_EnableHook(MH_ALL_HOOKS);
 
 	// nullify RageNetSend thread
 	hook::put<uint16_t>(hook::get_pattern("41 BC 88 13 00 00 E8 ? ? ? ? 83 C8 01", -6), 0xE990);
@@ -1748,5 +1784,39 @@ static HookFunction hookFunction([] ()
 		{
 			_processEntitlements();
 		});
+	}
+
+	// pretend to have CGameScriptHandlerNetComponent always be host
+	// (we now use 'real' network scripts with net component, and compatibility
+	// mandates check of netComponent && netComponent->IsHost() always fails)
+	hook::jump(hook::get_pattern("33 DB 48 85 C0 74 17 48 8B 48 10 48 85 C9 74 0E", -10), ReturnTrue);
+
+	// don't consider ourselves as host for world state reassignment
+	hook::put<uint16_t>(hook::get_pattern("EB 02 32 C0 84 C0 0F 84 B4 00", 6), 0xE990);
+
+	// network host tweaks
+	rage::scrEngine::OnScriptInit.Connect([]()
+	{
+		auto origCreatePickup = fx::ScriptEngine::GetNativeHandler(0x891804727E0A98B7);
+
+		// CPickupPlacement needs flag `1` to actually work without net component
+		fx::ScriptEngine::RegisterNativeHandler(0x891804727E0A98B7, [=](fx::ScriptContext& context)
+		{
+			context.SetArgument(7, context.GetArgument<int>(7) | 1);
+
+			(*origCreatePickup)(context);
+		});
+	});
+
+	// always return 'true' from netObjectMgr duplicate script object ID checks
+	// (this function deletes network objects considered as duplicate)
+	hook::jump(hook::get_pattern("49 8B 0C 24 0F B6 51", -0x69), ReturnTrue);
+
+	// 1365 requirement: wait for SC to have inited before loading vehicle metadata
+	{
+		auto location = hook::get_pattern("BA 49 00 00 00 E8 ? ? ? ? EB 28", 0x20);
+
+		hook::set_call(&_origLoadMeta, location);
+		hook::call(location, WaitForScAndLoadMeta);
 	}
 });

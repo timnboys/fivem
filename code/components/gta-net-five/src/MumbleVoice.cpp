@@ -17,6 +17,7 @@ static NetLibrary* g_netLibrary;
 static uint32_t* g_preferenceArray;
 
 // 1290
+// #TODO1365
 enum PrefEnum
 {
 	PREF_VOICE_ENABLE = 0x60,
@@ -81,6 +82,68 @@ void MumbleVoice_BindNetLibrary(NetLibrary* library)
 				catch (std::exception& e)
 				{
 					trace("Server policy - Mumble check failed for %s\n", e.what());
+				}
+			}
+		});
+	});
+}
+
+#include <rapidjson/document.h>
+
+void Policy_BindNetLibrary(NetLibrary* library)
+{
+	g_netLibrary = library;
+
+	g_netLibrary->OnConnectOKReceived.Connect([](NetAddress addr)
+	{
+		Instance<ICoreGameInit>::Get()->SetData("policy", "");
+
+		Instance<HttpClient>::Get()->DoGetRequest(fmt::sprintf("http://%s:%d/info.json", addr.GetAddress(), addr.GetPort()), [=](bool success, const char* data, size_t size)
+		{
+			if (success)
+			{
+				try
+				{
+					json info = json::parse(data, data + size);
+
+					if (info.is_object() && info["vars"].is_object())
+					{
+						auto val = info["vars"].value("sv_licenseKeyToken", "");
+
+						if (!val.empty())
+						{
+							Instance<HttpClient>::Get()->DoGetRequest(fmt::sprintf("https://policy-live.fivem.net/api/policy/%s", val), [=](bool success, const char* data, size_t size)
+							{
+								if (success)
+								{
+									rapidjson::Document doc;
+									doc.Parse(data, size);
+
+									std::stringstream policyStr;
+
+									if (!doc.HasParseError() && doc.IsArray())
+									{
+										for (auto it = doc.Begin(); it != doc.End(); it++)
+										{
+											if (it->IsString())
+											{
+												policyStr << "[" << it->GetString() << "]";
+											}
+										}
+									}
+
+									std::string policy = policyStr.str();
+									trace("Policy is %s\n", policy);
+
+									Instance<ICoreGameInit>::Get()->SetData("policy", policy);
+								}
+							});
+						}
+					}
+				}
+				catch (std::exception& e)
+				{
+					trace("Server policy - get failed for %s\n", e.what());
 				}
 			}
 		});
@@ -331,6 +394,9 @@ static void Mumble_RunFrame()
 	}
 }
 
+static std::bitset<256> g_talkers;
+static std::bitset<256> o_talkers;
+
 static InitFunction initFunction([]()
 {
 	g_mumbleClient = CreateMumbleClient();
@@ -346,6 +412,7 @@ static InitFunction initFunction([]()
 		g_mumbleClient->SetAudioDistance(FLT_MAX);
 
 		Mumble_Disconnect();
+		o_talkers.reset();
 	});
 });
 
@@ -358,8 +425,6 @@ static bool _isAnyoneTalking(void* mgr)
 
 static bool(*g_origIsPlayerTalking)(void*, void*);
 
-static std::bitset<256> g_talkers;
-
 static bool _isPlayerTalking(void* mgr, char* playerData)
 {
 	if (g_origIsPlayerTalking(mgr, playerData))
@@ -368,6 +433,7 @@ static bool _isPlayerTalking(void* mgr, char* playerData)
 	}
 
 	// 1290
+	// #TODO1365
 	auto playerInfo = playerData - 32 - 48 - 16;
 
 	// get the ped
@@ -382,7 +448,7 @@ static bool _isPlayerTalking(void* mgr, char* playerData)
 			// actually: netobj owner
 			auto index = netObj[73];
 
-			if (g_talkers.test(index))
+			if (g_talkers.test(index) || o_talkers.test(index))
 			{
 				return true;
 			}
@@ -505,6 +571,29 @@ static HookFunction hookFunction([]()
 					if (talkerSet.find(name) != talkerSet.end())
 					{
 						g_talkers.set(i);
+					}
+				}
+			}
+		});
+
+		fx::ScriptEngine::RegisterNativeHandler("SET_PLAYER_TALKING_OVERRIDE", [](fx::ScriptContext& context)
+		{
+			auto isPlayerActive = fx::ScriptEngine::GetNativeHandler(0xB8DFD30D6973E135);
+
+			int playerId = context.GetArgument<int>(0);
+			int state = context.GetArgument<bool>(1);
+
+			if (playerId < o_talkers.size() && playerId >= 0)
+			{
+				if (FxNativeInvoke::Invoke<bool>(isPlayerActive, playerId))
+				{
+					if (state)
+					{
+						o_talkers.set(playerId);
+					}
+					else
+					{
+						o_talkers.reset(playerId);
 					}
 				}
 			}

@@ -23,6 +23,8 @@
 
 #include <Hooking.h>
 
+rage::netObject* g_curNetObject;
+
 void ObjectIds_AddObjectId(int objectId);
 
 void AssociateSyncTree(int objectId, rage::netSyncTree* syncTree);
@@ -212,18 +214,20 @@ void CloneManagerLocal::HandleCloneAcks(const char* data, size_t len)
 					if (netObj)
 					{
 						auto syncTree = netObj->GetSyncTree();
+						syncTree->AckCfx(netObj, timestamp);
 
 						if (netObj->m_20())
 						{
 							// 1290
-							((void(*)(rage::netSyncTree*, rage::netObject*, uint8_t, uint16_t, uint32_t, int))0x1415D94F0)(syncTree, netObj, 31, 0 /* seq? */, timestamp, 0xFFFFFFFF);
+							// 1365
+							((void(*)(rage::netSyncTree*, rage::netObject*, uint8_t, uint16_t, uint32_t, int))0x1415E29B8)(syncTree, netObj, 31, 0 /* seq? */, timestamp, 0xFFFFFFFF);
 						}
 					}
 				}
 				break;
 			}
 			// timestamp ack?
-			case 5:
+			/*case 5:
 			{
 				auto timestamp = buf.Read<uint32_t>();
 
@@ -237,14 +241,17 @@ void CloneManagerLocal::HandleCloneAcks(const char* data, size_t len)
 
 						if (netObj->m_20())
 						{
+							syncTree->AckCfx(netObj, timestamp);
+
 							// 1290
-							((void(*)(rage::netSyncTree*, rage::netObject*, uint8_t, uint16_t, uint32_t, int))0x1415D94F0)(syncTree, netObj, 31, 0 /* seq? */, timestamp, 0xFFFFFFFF);
+							// 1365
+							((void(*)(rage::netSyncTree*, rage::netObject*, uint8_t, uint16_t, uint32_t, int))0x1415E29B8)(syncTree, netObj, 31, 0 /* seq? * /, timestamp, 0xFFFFFFFF);
 						}
 					}
 				}
 
 				break;
-			}
+			}*/
 			// remove ack?
 			case 3:
 			{
@@ -409,7 +416,7 @@ void msgPackedClones::Read(net::Buffer& buffer)
 				uint32_t msecHigh = msgBuf.Read<uint32_t>(32);
 
 				uint64_t serverTime = ((uint64_t(msecHigh) << 32) | msecLow);
-				UpdateTime(serverTime);
+				//UpdateTime(serverTime);
 
 				break;
 			}
@@ -592,6 +599,8 @@ bool CloneManagerLocal::HandleCloneUpdate(const msgClone& msg)
 		// our object, it's fine
 		return true;
 	}
+
+	g_curNetObject = obj;
 
 	// get sync tree and read data
 	auto syncTree = obj->GetSyncTree();
@@ -786,7 +795,8 @@ void CloneManagerLocal::WriteUpdates()
 
 	{
 		uint32_t timestamp = rage::netInterface_queryFunctions::GetInstance()->GetTimestamp();
-		uint32_t ackTimestamp = _getNetAckTimestamp();
+		uint32_t ackTimestamp = timestamp;
+		//uint32_t ackTimestamp = _getNetAckTimestamp();
 
 		m_sendBuffer.Write(3, 5);
 		m_sendBuffer.Write(32, timestamp);
@@ -838,7 +848,8 @@ void CloneManagerLocal::WriteUpdates()
 				// pretend to ack the remove to process removal
 				// 1103
 				// 1290
-				((void(*)(rage::netObjectMgr*, rage::netObject*))0x1415C8CC8)(objectMgr, object);
+				// 1365
+				((void(*)(rage::netObjectMgr*, rage::netObject*))0x1415D2328)(objectMgr, object);
 			}
 
 			// don't actually continue sync
@@ -860,7 +871,7 @@ void CloneManagerLocal::WriteUpdates()
 			// REMOVE THIS!!
 			//objectData.lastSyncAck = msec();
 		}
-		else if ((msec() - objectData.lastSyncTime) > 100ms)
+		else// if ((msec() - objectData.lastSyncTime) > 100ms)
 		{
 			if (objectData.lastSyncAck == 0ms)
 			{
@@ -910,6 +921,8 @@ void CloneManagerLocal::WriteUpdates()
 			}
 
 			// write tree
+			g_curNetObject = object;
+
 			syncTree->WriteTreeCfx(syncType, 0, object, &rlBuffer, rage::netInterface_queryFunctions::GetInstance()->GetTimestamp(), nullptr, 31, nullptr);
 
 			AssociateSyncTree(object->objectId, syncTree);
@@ -1022,8 +1035,7 @@ void CloneManagerLocal::AttemptFlushNetBuffer()
 void CloneManagerLocal::SendUpdates()
 {
 	// if ((timeGetTime() - lastSend) > 100 || netBuffer.GetCurOffset() >= 1200)
-
-	if (m_sendBuffer.GetDataLength() > 0)
+	if (m_sendBuffer.GetDataLength() > 600 || (msec() - m_lastSend) > 20ms)
 	{
 		m_sendBuffer.Write(3, 7);
 
@@ -1047,10 +1059,10 @@ void CloneManagerLocal::SendUpdates()
 			fclose(f);
 		}
 #endif
-	}
 
-	m_sendBuffer.SetCurrentBit(0);
-	m_lastSend = msec();
+		m_sendBuffer.SetCurrentBit(0);
+		m_lastSend = msec();
+	}
 }
 
 CloneManagerLocal g_cloneMgr;

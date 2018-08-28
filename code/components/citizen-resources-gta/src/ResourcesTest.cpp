@@ -22,6 +22,9 @@
 
 #include <CoreConsole.h>
 
+#include <GlobalEvents.h>
+#include <ResourceGameLifetimeEvents.h>
+
 #include <Error.h>
 
 #include <deque>
@@ -83,6 +86,14 @@ static InitFunction initFunction([] ()
 		CfxCollection_AddStreamingFileByTag(entry.resourceName, entry.filePath, { entry.rscPagesVirtual, entry.rscPagesPhysical });
 	});
 
+	OnMsgConfirm.Connect([]()
+	{
+		Instance<fx::ResourceManager>::Get()->ForAllResources([](fwRefContainer<fx::Resource> resource)
+		{
+			resource->GetComponent<fx::ResourceGameLifetimeEvents>()->OnBeforeGameShutdown();
+		});
+	}, -500);
+
 	fx::Resource::OnInitializeInstance.Connect([] (fx::Resource* resource)
 	{
 		resource->SetComponent(new ResourceEntryListComponent());
@@ -96,6 +107,17 @@ static InitFunction initFunction([] ()
 
 			fwRefContainer<fx::ResourceMetaDataComponent> metaData = resource->GetComponent<fx::ResourceMetaDataComponent>();
 			std::string resourceRoot = resource->GetPath();
+
+			// block anything resembling an assault_vehicles resource, this is outdated
+			// and causes crashes (FIVEM-CLIENT-1365-18)
+			for (auto& entry : metaData->GetEntries("data_file_extra"))
+			{
+				if (entry.second == "\"data/ai/vehicleweapons_caracara.meta\"")
+				{
+					trace("Ignoring resource data files for %s - this has been obsoleted by the 1.0.1365 update (mpassault_vehicles).\n", resource->GetName());
+					return;
+				}
+			}
 
 			for (auto& meta : metaData->GetEntries("init_meta"))
 			{
@@ -164,13 +186,12 @@ static InitFunction initFunction([] ()
 		resource->OnStop.Connect([=] ()
 		{
 			auto entryListComponent = resource->GetComponent<ResourceEntryListComponent>();
+			auto thisList = std::move(entryListComponent->list);
 
-			for (const auto& entry : entryListComponent->list)
+			for (const auto& entry : thisList)
 			{
 				streaming::RemoveDataFileFromLoadList(entry.first, entry.second);
 			}
-
-			entryListComponent->list.clear();
 
 			CfxCollection_RemoveStreamingTag(resource->GetName());
 		}, -500);

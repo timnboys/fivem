@@ -85,10 +85,22 @@ static pplx::task<std::vector<std::tuple<fwRefContainer<fx::Resource>, std::stri
 			}
 		}
 
+		static uint64_t lastDownloadTime = GetTickCount64();
+
+		auto throttledConnectionProgress = [netLibrary](const std::string& string, int count, int total)
+		{
+			if ((GetTickCount64() - lastDownloadTime) > 500)
+			{
+				netLibrary->OnConnectionProgress(string, count, total);
+
+				lastDownloadTime = GetTickCount64();
+			}
+		};
+
 		auto mounterRef = manager->GetMounterForUri(resourceUri);
 		static_cast<fx::CachedResourceMounter*>(mounterRef.GetRef())->AddStatusCallback(resourceName, [=](int downloadCurrent, int downloadTotal)
 		{
-			netLibrary->OnConnectionProgress(fmt::sprintf("Downloading %s (%d of %d - %.2f/%.2f MiB)", resourceName, progressCounter->current, progressCounter->total,
+			throttledConnectionProgress(fmt::sprintf("Downloading %s (%d of %d - %.2f/%.2f MiB)", resourceName, progressCounter->current, progressCounter->total,
 				downloadCurrent / 1024.0f / 1024.0f, downloadTotal / 1024.0f / 1024.0f), progressCounter->current, progressCounter->total);
 		});
 
@@ -96,7 +108,7 @@ static pplx::task<std::vector<std::tuple<fwRefContainer<fx::Resource>, std::stri
 
 		// report progress
 		int currentCount = progressCounter->current.fetch_add(1) + 1;
-		netLibrary->OnConnectionProgress(fmt::sprintf("Downloaded %s (%d of %d)", resourceName, currentCount, progressCounter->total), currentCount, progressCounter->total);
+		throttledConnectionProgress(fmt::sprintf("Downloaded %s (%d of %d)", resourceName, currentCount, progressCounter->total), currentCount, progressCounter->total);
 
 		// return tuple
 		list.emplace_back(resource, resourceName);
@@ -109,7 +121,7 @@ static InitFunction initFunction([] ()
 {
 	NetLibrary::OnNetLibraryCreate.Connect([] (NetLibrary* netLibrary)
 	{
-		static std::mutex executeNextGameFrameMutex;
+		static std::recursive_mutex executeNextGameFrameMutex;
 		static std::vector<std::function<void()>> executeNextGameFrame;
 
 		auto updateResources = [=] (const std::string& updateList, const std::function<void()>& doneCb)
@@ -318,6 +330,12 @@ static InitFunction initFunction([] ()
 
 								uint32_t size = i->value["size"].GetUint();
 
+								// skip >16 MiB resources
+								if (size >= (16 * 1024 * 1024))
+								{
+									continue;
+								}
+
 								mounter->AddResourceEntry(resourceName, filename, hash, resourceBaseUrl + filename, size, {
 									{ "rscVersion", std::to_string(entry.rscVersion) },
 									{ "rscPagesPhysical", std::to_string(entry.rscPagesPhysical) },
@@ -370,7 +388,7 @@ static InitFunction initFunction([] ()
 						{
 							std::string resourceName = resource->GetName();
 
-							std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
+							std::unique_lock<std::recursive_mutex> lock(executeNextGameFrameMutex);
 							executeNextGameFrame.push_back([=]()
 							{
 								if (!resource->Start())
@@ -383,7 +401,7 @@ static InitFunction initFunction([] ()
 
 					// mark DownloadsComplete on the next frame so all resources will have started
 					{
-						std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
+						std::unique_lock<std::recursive_mutex> lock(executeNextGameFrameMutex);
 						executeNextGameFrame.push_back([=]()
 						{
 							netLibrary->DownloadsComplete();
@@ -409,6 +427,7 @@ static InitFunction initFunction([] ()
 				{
 					g_resourceStartRequestSet.erase(resource);
 
+					std::unique_lock<std::recursive_mutex> lock(executeNextGameFrameMutex);
 					executeNextGameFrame.push_back(**updateResource);
 				});
 			}
@@ -429,13 +448,18 @@ static InitFunction initFunction([] ()
 
 		netLibrary->OnConnectionError.Connect([](const char* error)
 		{
-			fx::ResourceManager* resourceManager = Instance<fx::ResourceManager>::Get();
-			resourceManager->ResetResources();
+			std::unique_lock<std::recursive_mutex> lock(executeNextGameFrameMutex);
+
+			executeNextGameFrame.push_back([]()
+			{
+				fx::ResourceManager* resourceManager = Instance<fx::ResourceManager>::Get();
+				resourceManager->ResetResources();
+			});
 		});
 
 		OnGameFrame.Connect([] ()
 		{
-			std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
+			std::unique_lock<std::recursive_mutex> lock(executeNextGameFrameMutex);
 
 			for (auto& func : executeNextGameFrame)
 			{
@@ -527,7 +551,7 @@ static InitFunction initFunction([] ()
 				g_resourceUpdateQueue.push(resourceName);
 
 				{
-					std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
+					std::unique_lock<std::recursive_mutex> lock(executeNextGameFrameMutex);
 					executeNextGameFrame.push_back(**updateResource);
 				}
 			}
@@ -552,9 +576,14 @@ static InitFunction initFunction([] ()
 
 		netLibrary->OnFinalizeDisconnect.Connect([=](NetAddress)
 		{
-			Instance<fx::ResourceManager>::Get()->ForAllResources([](fwRefContainer<fx::Resource> resource)
+			std::unique_lock<std::recursive_mutex> lock(executeNextGameFrameMutex);
+
+			executeNextGameFrame.push_back([]()
 			{
-				resource->GetComponent<fx::ResourceGameLifetimeEvents>()->OnGameDisconnect();
+				Instance<fx::ResourceManager>::Get()->ForAllResources([](fwRefContainer<fx::Resource> resource)
+				{
+					resource->GetComponent<fx::ResourceGameLifetimeEvents>()->OnGameDisconnect();
+				});
 			});
 		});
 

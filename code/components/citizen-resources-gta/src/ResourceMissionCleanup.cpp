@@ -7,6 +7,7 @@
 
 #include "StdInc.h"
 #include <Resource.h>
+#include <Error.h>
 
 #ifdef GTA_FIVE
 #include <ScriptHandlerMgr.h>
@@ -21,6 +22,8 @@
 #include <Pool.h>
 
 #include <ResourceGameLifetimeEvents.h>
+
+#include <sysAllocator.h>
 
 #include <stack>
 
@@ -59,15 +62,14 @@ static std::stack<rage::scrThread*> g_lastThreads;
 
 struct MissionCleanupData
 {
-	rage::scriptHandler* scriptHandler;
-	std::stack<rage::scriptHandler*> lastScriptHandlers;
-
 	DummyThread* dummyThread;
 
 	int behaviorVersion;
 
+	bool cleanedUp;
+
 	MissionCleanupData()
-		: scriptHandler(nullptr), dummyThread(nullptr)
+		: dummyThread(nullptr), cleanedUp(false)
 	{
 
 	}
@@ -103,8 +105,9 @@ static InitFunction initFunction([] ()
 
 		resource->OnStart.Connect([=] ()
 		{
-			data->scriptHandler = nullptr;
 			data->dummyThread = nullptr;
+
+			data->cleanedUp = false;
 
 			auto metaData = resource->GetComponent<fx::ResourceMetaDataComponent>();
 
@@ -125,27 +128,23 @@ static InitFunction initFunction([] ()
 				return;
 			}
 
+			if (data->cleanedUp)
+			{
+				return;
+			}
+
+			// ensure that we can call into game code here
+			// #FIXME: should we not always be on the main thread?!
+			rage::sysMemAllocator::UpdateAllocatorValue();
+
 			bool setScriptNow = false;
 
 			// create the script handler if needed
-			if (!data->scriptHandler)
+			if (!data->dummyThread)
 			{
 				data->dummyThread = new DummyThread(resource);
 
-				// old behavior, removed as it will make a broken handler be left over (lastScriptHandler from AttachScript)
-				if (data->behaviorVersion >= 0 && data->behaviorVersion < 1)
-				{
-					data->scriptHandler = new CGameScriptHandlerNetwork(data->dummyThread);
-
-					data->dummyThread->SetScriptHandler(data->scriptHandler);
-				}
-
 				CGameScriptHandlerMgr::GetInstance()->AttachScript(data->dummyThread);
-
-				if (data->behaviorVersion >= 1)
-				{
-					data->scriptHandler = data->dummyThread->GetScriptHandler();
-				}
 
 				setScriptNow = true;
 			}
@@ -156,16 +155,13 @@ static InitFunction initFunction([] ()
 			g_lastThreads.push(rage::scrEngine::GetActiveThread());
 			rage::scrEngine::SetActiveThread(gtaThread);
 
-			data->lastScriptHandlers.push(gtaThread->GetScriptHandler());
-			gtaThread->SetScriptHandler(data->scriptHandler);
-
 			if (setScriptNow)
 			{
+				// make this a network script
+				NativeInvoke::Invoke<0x1CA59E306ECB80A5, int>(32, false, -1);
+
 				if (data->behaviorVersion >= 1)
 				{
-					// make this a network script
-					NativeInvoke::Invoke<0x1CA59E306ECB80A5, int>(32, false, -1);
-
 					// get script status; this sets a flag in the CGameScriptHandlerNetComponent
 					NativeInvoke::Invoke<0x57D158647A6BFABF, int>();
 				}
@@ -185,31 +181,9 @@ static InitFunction initFunction([] ()
 				return;
 			}
 
-			// put back the last script handler
-			GtaThread* gtaThread = data->dummyThread;
-
-			// will cause breakage if combined with old behavior with unneeded script handler
-			if (data->behaviorVersion >= 1)
+			if (data->cleanedUp)
 			{
-				if (gtaThread->GetScriptHandler() != data->scriptHandler)
-				{
-					assert(gtaThread->GetScriptHandler());
-
-					auto handler = gtaThread->GetScriptHandler();
-					data->scriptHandler = handler;
-				}
-			}
-
-			{
-				rage::scriptHandler* lastScriptHandler = nullptr;
-
-				if (!data->lastScriptHandlers.empty())
-				{
-					lastScriptHandler = data->lastScriptHandlers.top();
-					data->lastScriptHandlers.pop();
-				}
-
-				gtaThread->SetScriptHandler(lastScriptHandler);
+				return;
 			}
 
 			{
@@ -233,25 +207,32 @@ static InitFunction initFunction([] ()
 				return;
 			}
 
-			if (data->scriptHandler)
+			if (data->cleanedUp)
 			{
-				data->scriptHandler->CleanupObjectList();
+				return;
+			}
+
+			if (data->dummyThread && data->dummyThread->GetScriptHandler())
+			{
+				data->dummyThread->GetScriptHandler()->CleanupObjectList();
 				CGameScriptHandlerMgr::GetInstance()->DetachScript(data->dummyThread);
-
-				if (data->behaviorVersion >= 0 && data->behaviorVersion < 1)
-				{
-					delete data->scriptHandler;
-				}
-
-				data->scriptHandler = nullptr;
 			}
 
 			// having the function content inlined causes a compiler ICE - so we do it separately
 			DeleteDummyThread(&data->dummyThread);
+
+			data->cleanedUp = true;
 		};
+
+		resource->GetComponent<fx::ResourceGameLifetimeEvents>()->OnBeforeGameShutdown.Connect([=]()
+		{
+			AddCrashometry("game_shutdown", "true");
+			cleanupResource();
+		});
 
 		resource->GetComponent<fx::ResourceGameLifetimeEvents>()->OnGameDisconnect.Connect([=]()
 		{
+			AddCrashometry("game_disconnect", "true");
 			cleanupResource();
 		});
 
@@ -259,6 +240,6 @@ static InitFunction initFunction([] ()
 		{
 			cleanupResource();
 		}, 10000);
-	});
+	}, -50);
 });
 #endif

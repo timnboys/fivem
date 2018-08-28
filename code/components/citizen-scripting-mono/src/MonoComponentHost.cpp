@@ -19,6 +19,10 @@
 #include <mono/metadata/threads.h>
 #include <mono/metadata/exception.h>
 #include <mono/metadata/mono-debug.h>
+#include <mono/metadata/mono-gc.h>
+#include <mono/metadata/profiler.h>
+
+#include <shared_mutex>
 
 #ifndef IS_FXSERVER
 extern "C"
@@ -117,6 +121,67 @@ static void GI_PrintLogCall(MonoString* str)
 	trace("%s", mono_string_to_utf8(str));
 }
 
+static void
+gc_resize(MonoProfiler *profiler, int64_t new_size)
+{
+}
+
+static void
+profiler_shutdown(MonoProfiler *prof)
+{
+}
+
+struct _MonoProfiler
+{
+	char pad[128];
+};
+
+MonoProfiler _monoProfiler;
+
+static std::map<MonoDomain*, uint64_t> g_memoryUsages;
+static std::shared_mutex g_memoryUsagesMutex;
+
+static bool g_requestedMemoryUsage;
+
+#ifdef _MSC_VER
+static void gc_event(MonoProfiler *profiler, MonoGCEvent event, int generation)
+#else
+static void gc_event(MonoProfiler *profiler, MonoProfilerGCEvent event, int generation)
+#endif
+{
+	switch (event) {
+	case MONO_GC_EVENT_PRE_START_WORLD:
+#ifndef IS_FXSERVER
+		if (g_requestedMemoryUsage)
+		{
+			std::unique_lock<std::shared_mutex> lock(g_memoryUsagesMutex);
+
+			g_memoryUsages.clear();
+
+			mono_gc_walk_heap(0, [](MonoObject *obj, MonoClass *klass, uintptr_t size, uintptr_t num, MonoObject **refs, uintptr_t *offsets, void *data) -> int
+			{
+				g_memoryUsages[mono_object_get_domain(obj)] += size;
+
+				return 0;
+			}, nullptr);
+
+			g_requestedMemoryUsage = false;
+		}
+#endif
+		break;
+	}
+}
+
+static uint64_t GI_GetMemoryUsage()
+{
+	auto monoDomain = mono_domain_get();
+
+	g_requestedMemoryUsage = true;
+
+	std::shared_lock<std::shared_mutex> lock(g_memoryUsagesMutex);
+	return g_memoryUsages[monoDomain];
+}
+
 MonoMethod* g_getImplementsMethod;
 MonoMethod* g_createObjectMethod;
 
@@ -156,6 +221,10 @@ static void InitMono()
 	mono_security_enable_core_clr();
 	mono_security_core_clr_set_options((MonoSecurityCoreCLROptions)(MONO_SECURITY_CORE_CLR_OPTIONS_RELAX_DELEGATE | MONO_SECURITY_CORE_CLR_OPTIONS_RELAX_REFLECTION));
 	mono_security_set_core_clr_platform_callback(CoreClrCallback);
+
+	mono_profiler_install(&_monoProfiler, profiler_shutdown);
+	mono_profiler_install_gc(gc_event, gc_resize);
+	mono_profiler_set_events(MONO_PROFILE_GC);
 #endif
 
 	char* args[1];
@@ -183,6 +252,7 @@ static void InitMono()
 
 	mono_add_internal_call("CitizenFX.Core.GameInterface::PrintLog", reinterpret_cast<void*>(GI_PrintLogCall));
 	mono_add_internal_call("CitizenFX.Core.GameInterface::fwFree", reinterpret_cast<void*>(fwFree));
+	mono_add_internal_call("CitizenFX.Core.GameInterface::GetMemoryUsage", reinterpret_cast<void*>(GI_GetMemoryUsage));
 
 	std::string platformPath = MakeRelativeNarrowPath("citizen/clr2/lib/mono/4.5/CitizenFX.Core.dll");
 

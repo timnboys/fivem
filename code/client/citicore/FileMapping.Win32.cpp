@@ -112,6 +112,8 @@ NTSTATUS NTAPI LdrLoadDllStub(const wchar_t* fileName, uint32_t* flags, UNICODE_
 		moduleNameStr.find(L"bdcam64.dll") != std::string::npos ||
 		// lots of crashes occur in the DiscordApp overlay
 		moduleNameStr.find(L"overlay.x64.dll") != std::string::npos ||
+		// new DiscordApp overlay name :/
+		moduleNameStr.find(L"DiscordHook64.dll") != std::string::npos ||
 		// HideMyIP, causes LoopbackTcpServer and libuv to crash
 		moduleNameStr.find(L"hmipcore64.dll") != std::string::npos ||
 		// NVIDIA SHARE/ShadowPlay capture DLL, high correlation with ERR_GFX_D3D_INIT failures
@@ -142,9 +144,9 @@ LONG WINAPI RegOpenKeyExWStub(HKEY key, const wchar_t* subKey, DWORD options, RE
 			RegSetKeyValue(HKEY_CURRENT_USER, L"SOFTWARE\\CitizenFX\\Social Club", name, REG_SZ, keyString, (wcslen(keyString) * 2) + 2);
 		};
 
-		setValue(L"InstallFolder", MakeRelativeCitPath(L"cache\\game\\ros_1231").c_str());
+		setValue(L"InstallFolder", MakeRelativeCitPath(L"cache\\game\\ros_1238").c_str());
 		setValue(L"InstallLang", L"1033");
-		setValue(L"Version", L"1.2.3.1");
+		setValue(L"Version", L"1.2.3.8");
 
         LONG status = g_origRegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\CitizenFX\\Social Club", 0, KEY_READ, outKey);
 
@@ -154,17 +156,42 @@ LONG WINAPI RegOpenKeyExWStub(HKEY key, const wchar_t* subKey, DWORD options, RE
 	return g_origRegOpenKeyExW(key, subKey, options, samDesired, outKey);
 }
 
+static DWORD g_tlsHandle;
+
+struct TlsState
+{
+	bool inCreateFile;
+	bool inOpenFile;
+	bool inDeleteFile;
+	bool inQueryAttributes;
+};
+
+static TlsState* GetTls()
+{
+	auto data = TlsGetValue(g_tlsHandle);
+
+	if (!data)
+	{
+		data = HeapAlloc(GetProcessHeap(), 0, sizeof(TlsState));
+		memset(data, 0, sizeof(TlsState));
+
+		TlsSetValue(g_tlsHandle, data);
+	}
+
+	return reinterpret_cast<TlsState*>(data);
+}
+
 NTSTATUS(WINAPI* g_origNtCreateFile)(PHANDLE fileHandle, ACCESS_MASK desiredAccess, POBJECT_ATTRIBUTES objectAttributes, PIO_STATUS_BLOCK ioBlock, PLARGE_INTEGER allocationSize,
 									 ULONG fileAttributes, ULONG shareAccess, ULONG createDisposition, ULONG createOptions, PVOID eaBuffer, ULONG eaLength);
 
 NTSTATUS WINAPI NtCreateFileStub(PHANDLE fileHandle, ACCESS_MASK desiredAccess, POBJECT_ATTRIBUTES objectAttributes, PIO_STATUS_BLOCK ioBlock, PLARGE_INTEGER allocationSize,
 								 ULONG fileAttributes, ULONG shareAccess, ULONG createDisposition, ULONG createOptions, PVOID eaBuffer, ULONG eaLength)
 {
-	static thread_local bool inHook;
+	auto tls = GetTls();
 
-	if (!inHook)
+	if (!tls->inCreateFile)
 	{
-		inHook = true;
+		tls->inCreateFile = true;
 
 		OBJECT_ATTRIBUTES attributes = *objectAttributes;
 		UNICODE_STRING newString;
@@ -186,7 +213,7 @@ NTSTATUS WINAPI NtCreateFileStub(PHANDLE fileHandle, ACCESS_MASK desiredAccess, 
 
 		NTSTATUS retval = g_origNtCreateFile(fileHandle, desiredAccess, &attributes, ioBlock, allocationSize, fileAttributes, shareAccess, createDisposition, createOptions, eaBuffer, eaLength);
 
-		inHook = false;
+		tls->inCreateFile = false;
 
 		return retval;
 	}
@@ -198,11 +225,11 @@ NTSTATUS(WINAPI* g_origNtOpenFile)(PHANDLE fileHandle, ACCESS_MASK desiredAccess
 
 NTSTATUS WINAPI NtOpenFileStub(PHANDLE fileHandle, ACCESS_MASK desiredAccess, POBJECT_ATTRIBUTES objectAttributes, PIO_STATUS_BLOCK ioBlock, ULONG shareAccess, ULONG openOptions)
 {
-	static thread_local bool inHook;
+	auto tls = GetTls();
 
-	if (!inHook)
+	if (!tls->inOpenFile)
 	{
-		inHook = true;
+		tls->inOpenFile = true;
 
 		OBJECT_ATTRIBUTES attributes = *objectAttributes;
 		UNICODE_STRING newString;
@@ -224,7 +251,7 @@ NTSTATUS WINAPI NtOpenFileStub(PHANDLE fileHandle, ACCESS_MASK desiredAccess, PO
 
 		NTSTATUS retval = g_origNtOpenFile(fileHandle, desiredAccess, &attributes, ioBlock, shareAccess, openOptions);
 
-		inHook = false;
+		tls->inOpenFile = false;
 
 		return retval;
 	}
@@ -236,11 +263,11 @@ NTSTATUS(WINAPI* g_origNtDeleteFile)(POBJECT_ATTRIBUTES objectAttributes);
 
 NTSTATUS WINAPI NtDeleteFileStub(POBJECT_ATTRIBUTES objectAttributes)
 {
-	static thread_local bool inHook;
+	auto tls = GetTls();
 
-	if (!inHook)
+	if (!tls->inDeleteFile)
 	{
-		inHook = true;
+		tls->inDeleteFile = true;
 
 		OBJECT_ATTRIBUTES attributes = *objectAttributes;
 		UNICODE_STRING newString;
@@ -262,7 +289,7 @@ NTSTATUS WINAPI NtDeleteFileStub(POBJECT_ATTRIBUTES objectAttributes)
 
 		NTSTATUS retval = g_origNtDeleteFile(&attributes);
 
-		inHook = false;
+		tls->inDeleteFile = false;
 
 		return retval;
 	}
@@ -274,11 +301,11 @@ NTSTATUS(WINAPI* g_origNtQueryAttributesFile)(POBJECT_ATTRIBUTES objectAttribute
 
 NTSTATUS WINAPI NtQueryAttributesFileStub(POBJECT_ATTRIBUTES objectAttributes, void* basicInformation)
 {
-	static thread_local bool inHook;
+	auto tls = GetTls();
 
-	if (!inHook)
+	if (!tls->inQueryAttributes)
 	{
-		inHook = true;
+		tls->inQueryAttributes = true;
 
 		OBJECT_ATTRIBUTES attributes = *objectAttributes;
 		UNICODE_STRING newString;
@@ -300,7 +327,7 @@ NTSTATUS WINAPI NtQueryAttributesFileStub(POBJECT_ATTRIBUTES objectAttributes, v
 
 		NTSTATUS retval = g_origNtQueryAttributesFile(&attributes, basicInformation);
 
-		inHook = false;
+		tls->inQueryAttributes = false;
 
 		return retval;
 	}
@@ -356,6 +383,7 @@ NTSTATUS NTAPI LdrGetProcedureAddressStub(HMODULE hModule, PANSI_STRING function
 extern "C" DLL_EXPORT void CoreSetMappingFunction(MappingFunctionType function)
 {
 	g_mappingFunction = function;
+	g_tlsHandle = TlsAlloc();
 
 	MH_CreateHookApi(L"ntdll.dll", "NtCreateFile", NtCreateFileStub, (void**)&g_origNtCreateFile);
 	MH_CreateHookApi(L"ntdll.dll", "NtOpenFile", NtOpenFileStub, (void**)&g_origNtOpenFile);

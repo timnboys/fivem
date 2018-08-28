@@ -162,6 +162,8 @@ private:
 
 	HttpClient* m_httpClient;
 
+	HttpRequestPtr m_handshakeRequest;
+
 	uint32_t m_outSequence;
 
 	uint32_t m_serverProtocol;
@@ -297,6 +299,10 @@ public:
 
 	void SetMetricSink(fwRefContainer<INetMetricSink>& sink);
 
+	virtual void AddReceiveTick() override;
+
+	virtual void AddSendTick() override;
+
 public:
 	static NetLibrary* Create();
 
@@ -324,6 +330,13 @@ public:
 
 	// a1: detailed progress message
 	fwEvent<const std::string&> OnConnectionSubProgress;
+
+	// event to intercept connection requests
+	// return false to intercept connection (and call the callback to continue)
+	// this won't like more than one interception attempt, however
+	// a1: connection address
+	// a2: continuation callback
+	fwEvent<const net::PeerAddress&, const std::function<void()>&> OnInterceptConnection;
 
 	static
 #ifndef COMPILING_NET

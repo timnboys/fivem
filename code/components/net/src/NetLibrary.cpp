@@ -22,6 +22,42 @@ fwEvent<int, const std::string&> OnRichPresenceSetValue;
 
 std::unique_ptr<NetLibraryImplBase> CreateNetLibraryImplV2(INetLibraryInherit* base);
 
+#define TIMEOUT_DATA_SIZE 16
+
+static uint32_t g_runFrameTicks[TIMEOUT_DATA_SIZE];
+static uint32_t g_receiveDataTicks[TIMEOUT_DATA_SIZE];
+static uint32_t g_sendDataTicks[TIMEOUT_DATA_SIZE];
+
+static void AddTimeoutTick(uint32_t* timeoutList)
+{
+	memmove(&timeoutList[0], &timeoutList[1], (TIMEOUT_DATA_SIZE - 1) * sizeof(uint32_t));
+	timeoutList[TIMEOUT_DATA_SIZE - 1] = timeGetTime();
+}
+
+static std::string CollectTimeoutInfo()
+{
+	uint32_t begin = timeGetTime();
+
+	auto gatherInfo = [begin](uint32_t* list) -> std::string
+	{
+		std::stringstream ss;
+
+		for (int i = 0; i < TIMEOUT_DATA_SIZE; i++)
+		{
+			ss << fmt::sprintf("-%d ", begin - list[i]);
+		}
+
+		return ss.str();
+	};
+
+	return fmt::sprintf(
+		"DEBUG INFO FOR TIMEOUTS:\nrun frame: %s\nreceive data: %s\nsend data: %s",
+		gatherInfo(g_runFrameTicks),
+		gatherInfo(g_receiveDataTicks),
+		gatherInfo(g_sendDataTicks)
+	);
+}
+
 inline ISteamComponent* GetSteam()
 {
 	auto steamComponent = Instance<ISteamComponent>::Get();
@@ -38,6 +74,16 @@ inline ISteamComponent* GetSteam()
 	}
 
 	return steamComponent;
+}
+
+void NetLibrary::AddReceiveTick()
+{
+	AddTimeoutTick(g_receiveDataTicks);
+}
+
+void NetLibrary::AddSendTick()
+{
+	AddTimeoutTick(g_sendDataTicks);
 }
 
 static uint32_t m_tempGuid = GetTickCount();
@@ -328,8 +374,14 @@ void NetLibrary::ProcessOOB(const NetAddress& from, const char* oob, size_t leng
 			if (length >= 6)
 			{
 				const char* errorStr = &oob[6];
+				auto errText = std::string(errorStr, length - 6);
 
-				GlobalError("%s", std::string(errorStr, length - 6));
+				if (strstr(errorStr, "Timed out") != nullptr)
+				{
+					errText += fmt::sprintf("\n%s", CollectTimeoutInfo());
+				}
+
+				GlobalError("%s", errText);
 			}
 		}
 	}
@@ -409,6 +461,8 @@ void NetLibrary::RunFrame()
 	{
 		return;
 	}
+
+	AddTimeoutTick(g_runFrameTicks);
 
 	if (m_connectionState != m_lastConnectionState)
 	{
@@ -503,7 +557,7 @@ void NetLibrary::RunFrame()
 
 				OnConnectionTimedOut();
 
-				GlobalError("Server connection timed out after 15 seconds.");
+				GlobalError("Server connection timed out after 15 seconds.\n%s", CollectTimeoutInfo());
 
 				m_connectionState = CS_IDLE;
 				m_currentServer = NetAddress();
@@ -692,10 +746,12 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 
 				HttpRequestOptions options;
 				options.streamingCallback = handleAuthResultData;
-				m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), m_httpClient->BuildPostString(newMap), options, handleAuthResult);
+				m_handshakeRequest = m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), m_httpClient->BuildPostString(newMap), options, handleAuthResult);
 
 				return true;
 			}
+
+			m_handshakeRequest = {};
 
 			if (node["error"].IsDefined())
 			{
@@ -784,10 +840,12 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 
 	performRequest = [=]()
 	{
+		OnConnectionProgress("Handshaking with server...", 0, 100);
+
 		HttpRequestOptions options;
 		options.streamingCallback = handleAuthResultData;
 
-		m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), m_httpClient->BuildPostString(postMap), options, handleAuthResult);
+		m_handshakeRequest = m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), m_httpClient->BuildPostString(postMap), options, handleAuthResult);
 	};
 
 	m_httpClient->DoGetRequest(fmt::sprintf("https://runtime.fivem.net/blacklist/%s_%d", address.GetHost(), address.GetPort()), [=](bool success, const char* data, size_t length)
@@ -874,32 +932,48 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 		}
 	};
 
-	m_httpClient->DoPostRequest("https://lambda.fivem.net/api/ticket/create", { { "token", ros::GetEntitlementSource() }, { "server", address.ToString() }, { "guid", fmt::sprintf("%lld", GetGUID()) } }, [=](bool success, const char* data, size_t dataLen)
+	auto initiateRequest = [this, address, continueRequest]()
 	{
-		if (success)
+		OnConnectionProgress("Requesting authentication ticket...", 0, 100);
+
+		m_httpClient->DoPostRequest("https://lambda.fivem.net/api/ticket/create", { { "token", ros::GetEntitlementSource() }, { "server", address.ToString() }, { "guid", fmt::sprintf("%lld", GetGUID()) } }, [=](bool success, const char* data, size_t dataLen)
 		{
-			auto node = YAML::Load(std::string(data, dataLen));
-
-			if (node["error"].IsDefined())
+			if (success)
 			{
-				OnConnectionError(va("%s", node["error"].as<std::string>()));
+				auto node = YAML::Load(std::string(data, dataLen));
 
-				m_connectionState = CS_IDLE;
+				if (node["error"].IsDefined())
+				{
+					OnConnectionError(va("%s", node["error"].as<std::string>()));
 
-				return;
+					m_connectionState = CS_IDLE;
+
+					return;
+				}
+				else if (node["ticket"].IsDefined())
+				{
+					postMap["cfxTicket"] = node["ticket"].as<std::string>();
+				}
 			}
-			else if (node["ticket"].IsDefined())
-			{
-				postMap["cfxTicket"] = node["ticket"].as<std::string>();
-			}
-		}
 
-		continueRequest();
-	});
+			continueRequest();
+		});
+	};
+
+	if (OnInterceptConnection(address, initiateRequest))
+	{
+		initiateRequest();
+	}
 }
 
 void NetLibrary::CancelDeferredConnection()
 {
+	if (m_handshakeRequest)
+	{
+		m_handshakeRequest->Abort();
+		m_handshakeRequest = {};
+	}
+
 	if (m_connectionState == CS_INITING)
 	{
 		m_connectionState = CS_IDLE;

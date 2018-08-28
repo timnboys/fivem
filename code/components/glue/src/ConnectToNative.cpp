@@ -14,6 +14,7 @@
 #include <ConsoleHost.h>
 #include <CoreConsole.h>
 #include <ICoreGameInit.h>
+#include <GameInit.h>
 //New libs needed for saveSettings
 #include <fstream>
 #include <sstream>
@@ -31,6 +32,8 @@
 #include <rapidjson/writer.h>
 
 #include <SteamComponentAPI.h>
+
+#include "GameInit.h"
 
 static LONG WINAPI TerminateInstantly(LPEXCEPTION_POINTERS pointers)
 {
@@ -121,16 +124,25 @@ inline bool HasDefaultName()
 }
 
 static NetLibrary* netLibrary;
+static bool g_connected;
 
 static void ConnectTo(const std::string& hostnameStr)
 {
+	if (g_connected)
+	{
+		trace("Ignoring ConnectTo because we're already connecting/connected.\n");
+		return;
+	}
+
+	g_connected = true;
+
 	auto npa = net::PeerAddress::FromString(hostnameStr);
 
 	if (npa)
 	{
-		netLibrary->ConnectToServer(npa.get());
-
 		nui::ExecuteRootScript("citFrames[\"mpMenu\"].contentWindow.postMessage({ type: 'connecting' }, '*');");
+
+		netLibrary->ConnectToServer(npa.get());
 	}
 	else
 	{
@@ -146,6 +158,8 @@ static InitFunction initFunction([] ()
 
 		netLibrary->OnConnectionError.Connect([] (const char* error)
 		{
+			g_connected = false;
+
 			rapidjson::Document document;
 			document.SetString(error, document.GetAllocator());
 
@@ -175,6 +189,45 @@ static InitFunction initFunction([] ()
 				nui::ExecuteRootScript(va("citFrames[\"mpMenu\"].contentWindow.postMessage({ type: 'connectStatus', data: %s }, '*');", sbuffer.GetString()));
 			}
 		});
+
+		static std::function<void()> finishConnectCb;
+		static bool disconnected;
+
+		netLibrary->OnInterceptConnection.Connect([](const net::PeerAddress& peer, const std::function<void()>& cb)
+		{
+			if (Instance<ICoreGameInit>::Get()->GetGameLoaded() && !disconnected)
+			{
+				netLibrary->OnConnectionProgress("Waiting for game to shut down...", 0, 100);
+
+				finishConnectCb = cb;
+
+				return false;
+			}
+
+			disconnected = false;
+
+			return true;
+		});
+
+		Instance<ICoreGameInit>::Get()->OnShutdownSession.Connect([]()
+		{
+			if (finishConnectCb)
+			{
+				auto cb = std::move(finishConnectCb);
+				cb();
+
+				disconnected = false;
+			}
+			else
+			{
+				disconnected = true;
+			}
+		}, 5000);
+	});
+
+	OnKillNetwork.Connect([](const char*)
+	{
+		g_connected = false;
 	});
 
 	static ConsoleCommand connectCommand("connect", [](const std::string& server)
@@ -182,6 +235,15 @@ static InitFunction initFunction([] ()
 		ConnectTo(server);
 	});
 
+	static ConsoleCommand disconnectCommand("disconnect", []()
+	{
+		if (netLibrary->GetConnectionState() != 0)
+		{
+			OnKillNetwork("Disconnected.");
+			OnMsgConfirm();
+		}
+	});
+	
 	ConHost::OnInvokeNative.Connect([](const char* type, const char* arg)
 	{
 		if (!_stricmp(type, "connectTo"))
@@ -202,6 +264,8 @@ static InitFunction initFunction([] ()
 		else if (!_wcsicmp(type, L"cancelDefer"))
 		{
 			netLibrary->CancelDeferredConnection();
+
+			g_connected = false;
 		}
 		else if (!_wcsicmp(type, L"changeName"))
 		{
@@ -248,7 +312,7 @@ static InitFunction initFunction([] ()
 		}
 		else if (!_wcsicmp(type, L"checkNickname"))
 		{
-			if (!arg || !arg[0]) return;
+			if (!arg || !arg[0] || !netLibrary) return;
 			const char* text = netLibrary->GetPlayerName();
 			std::string newusername = ToNarrow(arg);
 
