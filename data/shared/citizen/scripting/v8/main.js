@@ -12,7 +12,8 @@ const EXT_LOCALFUNCREF = 11;
 
 	const codec = msgpack.createCodec({
 		uint8array: true,
-		preset: false
+		preset: false,
+		binarraybuffer: true
 	});
 
 	const pack = data => msgpack.encode(data, { codec });
@@ -29,7 +30,10 @@ const EXT_LOCALFUNCREF = 11;
 	Citizen.makeRefFunction = (refFunction) => {
 		const ref = nextRefIdx();
 
-		refFunctionsMap.set(ref, refFunction);
+		refFunctionsMap.set(ref, {
+			callback: refFunction,
+			refCount: 0
+		});
 
 		return Citizen.canonicalizeRef(ref);
 	};
@@ -41,8 +45,10 @@ const EXT_LOCALFUNCREF = 11;
 	}
 
 	function refFunctionUnpacker(refSerialized) {
+		const fnRef = Citizen.makeFunctionReference(refSerialized);
+	
 		return function (...args) {
-			return unpack(Citizen.invokeFunctionReference(refSerialized, pack(args)));
+			return unpack(fnRef(pack(args)));
 		};
 	}
 
@@ -56,7 +62,13 @@ const EXT_LOCALFUNCREF = 11;
 	 * @param {int} ref
 	 */
 	Citizen.setDeleteRefFunction(function(ref) {
-		refFunctionsMap.delete(ref);
+		if (refFunctionsMap.has(ref)) {
+			const data = refFunctionsMap.get(ref);
+			
+			if (--data.refCount <= 0) {		
+				refFunctionsMap.delete(ref);
+			}
+		}
 	});
 
 	/**
@@ -72,7 +84,7 @@ const EXT_LOCALFUNCREF = 11;
 			return pack([]);
 		}
 
-		return pack([refFunctionsMap.get(ref)(...unpack(argsSerialized))]);
+		return pack([refFunctionsMap.get(ref).callback(...unpack(argsSerialized))]);
 	});
 
 	/**
@@ -83,11 +95,9 @@ const EXT_LOCALFUNCREF = 11;
 	Citizen.setDuplicateRefFunction(function(ref) {
 		if (refFunctionsMap.has(ref)) {
 			const refFunction = refFunctionsMap.get(ref);
-			const newRef = nextRefIdx();
+			++refFunction.refCount;
 
-			refFunctionsMap.set(newRef, refFunction);
-
-			return newRef;
+			return ref;
 		}
 
 		return -1;

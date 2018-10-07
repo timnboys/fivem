@@ -105,20 +105,30 @@ public:
 
 result_t TestScriptHost::InvokeNative(fxNativeContext & context)
 {
+#if SCRT_HAS_CALLNATIVEHANDLER
+	// prepare an invocation context
+	fx::ScriptContextRaw scriptContext(context.arguments, context.numArguments);
+
+	// call the native handler
+	try
+	{
+		ScriptEngine::CallNativeHandler(context.nativeIdentifier, scriptContext);
+	}
+	catch (std::exception& e)
+	{
+		trace("%s: execution failed: %s\n", __func__, e.what());
+
+		return FX_E_INVALIDARG;
+	}
+#else
 	// get a native handler for the identifier
 	auto nativeHandler = ScriptEngine::GetNativeHandler(context.nativeIdentifier);
 
 	if (nativeHandler)
 	{
 		// prepare an invocation context
-		fx::ScriptContext scriptContext;
+		fx::ScriptContextRaw scriptContext(context.arguments, context.numArguments);
 		
-		// push arguments
-		for (int i = 0; i < context.numArguments; i++)
-		{
-			scriptContext.Push(context.arguments[i]);
-		}
-
 		// invoke the native handler
 		try
 		{
@@ -133,13 +143,12 @@ result_t TestScriptHost::InvokeNative(fxNativeContext & context)
 
 		// set the result value
 		context.numResults = 1;
-		
-		memcpy(&context.arguments[0], &scriptContext.GetArgument<uintptr_t>(0), sizeof(uintptr_t) * 3);
 	}
 	else
 	{
 		trace("WARNING: NON-EXISTENT NATIVE %016llx\n", context.nativeIdentifier);
 	}
+#endif
 
 	return FX_S_OK;
 }
@@ -347,6 +356,34 @@ result_t ScriptRuntimeHandler::GetCurrentRuntime(IScriptRuntime** runtime)
 
 	// conventions state we should AddRef anything we return, so we will
 	(*runtime)->AddRef();
+
+	return FX_S_OK;
+}
+
+result_t ScriptRuntimeHandler::GetInvokingRuntime(IScriptRuntime** runtime)
+{
+	if (ms_runtimeStack.empty())
+	{
+		*runtime = nullptr;
+		return FX_E_INVALIDARG;
+	}
+
+	// std::stack is bad, even more so as we're copying the entire stack
+	auto copyStack = ms_runtimeStack;
+	copyStack.pop();
+
+	if (copyStack.empty())
+	{
+		*runtime = nullptr;
+	}
+	else
+	{
+		auto lastRuntime = copyStack.top();
+		*runtime = lastRuntime;
+
+		// conventions state we should AddRef anything we return, so we will
+		(*runtime)->AddRef();
+	}
 
 	return FX_S_OK;
 }

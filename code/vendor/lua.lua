@@ -7,6 +7,10 @@ return {
 		targetname "lua"
 		language "C"
 		kind "StaticLib"
+		
+		if os.istarget('windows') then
+			flags { "LinkTimeOptimization" }
+		end
 
 		files
 		{

@@ -19,6 +19,8 @@
 #include <NetLibrary.h>
 #include <NetBuffer.h>
 
+#include <EntitySystem.h>
+
 extern NetLibrary* g_netLibrary;
 
 class CNetGamePlayer;
@@ -55,9 +57,9 @@ static rage::netPlayerMgrBase* g_playerMgr = (rage::netPlayerMgrBase*)0x1427D232
 
 void* g_tempRemotePlayer;
 
-static CNetGamePlayer* g_players[256];
-static std::unordered_map<uint16_t, CNetGamePlayer*> g_playersByNetId;
-static std::unordered_map<CNetGamePlayer*, uint16_t> g_netIdsByPlayer;
+CNetGamePlayer* g_players[256];
+std::unordered_map<uint16_t, CNetGamePlayer*> g_playersByNetId;
+std::unordered_map<CNetGamePlayer*, uint16_t> g_netIdsByPlayer;
 
 static CNetGamePlayer* g_playerList[256];
 static int g_playerListCount;
@@ -167,22 +169,6 @@ static bool IsNetworkPlayerConnected(int index)
 
 //int g_physIdx = 1;
 int g_physIdx = 42;
-
-struct ScInAddr
-{
-	uint64_t unkKey1;
-	uint64_t unkKey2;
-	uint32_t secKeyTime; // added in 393
-	uint32_t ipLan;
-	uint16_t portLan;
-	uint32_t ipUnk;
-	uint16_t portUnk;
-	uint32_t ipOnline;
-	uint16_t portOnline;
-	uint16_t pad3;
-	uint32_t newVal; // added in 372
-	uint64_t rockstarAccountId; // 463/505
-};
 
 namespace sync
 {
@@ -312,7 +298,7 @@ static CNetGamePlayer* netObject__GetOwnerNetPlayer(rage::netObject* object)
 		auto player = g_playersByNetId[TheClones->GetClientId(object)];
 
 		// FIXME: figure out why bad playerinfos occur
-		if (player->playerInfo != nullptr)
+		if (player != nullptr && player->playerInfo != nullptr)
 		{
 			return player;
 		}
@@ -442,6 +428,33 @@ static void PassObjectControlStub(CNetGamePlayer* player, rage::netObject* netOb
 
 	TheClones->GiveObjectToClient(netObject, g_netIdsByPlayer[player]);
 
+	fwEntity* entity = (fwEntity*)netObject->GetGameObject();
+	if (entity && entity->IsOfType(HashString("CVehicle")))
+	{
+		CVehicle* vehicle = static_cast<CVehicle*>(entity);
+		VehicleSeatManager* seatManager = vehicle->GetSeatManager();
+
+		for (int i = 0; i < seatManager->GetNumSeats(); i++)
+		{
+			auto occupant = seatManager->GetOccupant(i);
+
+			if (occupant)
+			{
+				auto netOccupant = reinterpret_cast<rage::netObject*>(occupant->GetNetObject());
+
+				if (netOccupant)
+				{
+					if (!netOccupant->syncData.isRemote && netOccupant->objectType != 11)
+					{
+						trace("passing occupant %d control as well\n", netOccupant->objectId);
+
+						PassObjectControlStub(player, netOccupant, a3);
+					}
+				}
+			}
+		}
+	}
+
 	//auto lastIndex = player->physicalPlayerIndex;
 	//player->physicalPlayerIndex = 31;
 
@@ -546,6 +559,29 @@ static CNetGamePlayer** GetNetworkPlayerList()
 	return g_playerList;
 }
 
+static int(*g_origGetNetworkPlayerListCount2)();
+static CNetGamePlayer**(*g_origGetNetworkPlayerList2)();
+
+static int GetNetworkPlayerListCount2()
+{
+	if (!Instance<ICoreGameInit>::Get()->OneSyncEnabled)
+	{
+		return g_origGetNetworkPlayerListCount2();
+	}
+
+	return g_playerListCount;
+}
+
+static CNetGamePlayer** GetNetworkPlayerList2()
+{
+	if (!Instance<ICoreGameInit>::Get()->OneSyncEnabled)
+	{
+		return g_origGetNetworkPlayerList2();
+	}
+
+	return g_playerList;
+}
+
 static HookFunction hookFunction([]()
 {
 	// temp dbg
@@ -602,6 +638,12 @@ static HookFunction hookFunction([]()
 		auto location = hook::get_pattern<char>("44 0F 28 CF F3 41 0F 59 C0 F3 44 0F 59 CF F3 44 0F 58 C8 E8", 19);
 		MH_CreateHook(hook::get_call(location + 0), GetNetworkPlayerListCount, (void**)&g_origGetNetworkPlayerListCount);
 		MH_CreateHook(hook::get_call(location + 8), GetNetworkPlayerList, (void**)&g_origGetNetworkPlayerList);
+	}
+
+	{
+		auto location = hook::get_pattern<char>("48 8B F0 85 DB 74 56 8B", -0x34);
+		MH_CreateHook(hook::get_call(location + 0x28), GetNetworkPlayerListCount2, (void**)&g_origGetNetworkPlayerListCount2);
+		MH_CreateHook(hook::get_call(location + 0x2F), GetNetworkPlayerList2, (void**)&g_origGetNetworkPlayerList2);
 	}
 
 	// getnetplayerped 32 cap
@@ -994,7 +1036,7 @@ static InitFunction initFunctionEv([]()
 			}
 
 			HandleNetGameEvent(data, len);
-		});
+		}, true);
 	});
 });
 
@@ -1008,6 +1050,18 @@ static bool SendGameEvent(void* eventMgr, void* ev)
 	}
 
 	return 1;
+}
+
+static uint32_t(*g_origGetFireApplicability)(void* event, void* pos);
+
+static uint32_t GetFireApplicability(void* event, void* pos)
+{
+	if (!Instance<ICoreGameInit>::Get()->OneSyncEnabled)
+	{
+		return g_origGetFireApplicability(event, pos);
+	}
+
+	return (0xFFFFFFFF);
 }
 
 static HookFunction hookFunctionEv([]()
@@ -1024,6 +1078,9 @@ static HookFunction hookFunctionEv([]()
 
 	// can cause crashes due to high player indices, default event sending
 	MH_CreateHook(hook::get_pattern("48 83 EC 30 80 7A 2D FF 4C 8B D2", -0xC), SendGameEvent, (void**)&g_origSendGameEvent);
+
+	// fire applicability
+	MH_CreateHook(hook::get_pattern("85 DB 74 78 44 8B F3 48", -0x30), GetFireApplicability, (void**)&g_origGetFireApplicability);
 
 	MH_EnableHook(MH_ALL_HOOKS);
 });
@@ -1190,6 +1247,13 @@ public:
 
 	void HandleTimeSync(net::Buffer& buffer);
 
+	bool IsInitialized();
+
+	inline void SetConnectionManager(void* mgr)
+	{
+		m_connectionMgr = mgr;
+	}
+
 private:
 	void* m_vtbl; // 0
 	void* m_connectionMgr; // 8
@@ -1216,12 +1280,39 @@ private:
 	uint32_t m_replySequence; // 116
 	uint32_t m_flags; // 120
 	uint32_t m_packetFlags; // 124
-	uint32_t m_appliedDelta; // 128
+	uint32_t m_lastTime; // 128, used to prevent time from going backwards
 	uint8_t m_applyFlags; // 132
 	uint8_t m_disabled; // 133
 };
 
 #include <mmsystem.h>
+
+static hook::cdecl_stub<void*()> _getConnectionManager([]()
+{
+	return hook::get_call(hook::get_pattern("E8 ? ? ? ? C7 44 24 40 60 EA 00 00"));
+});
+
+static bool(*g_origInitializeTime)(netTimeSync* timeSync, void* connectionMgr, int flags, void* trustHost,
+	uint32_t sessionSeed, int* deltaStart, int packetFlags, int initialBackoff, int maxBackoff);
+
+static bool g_initedTimeSync;
+
+bool netTimeSync::IsInitialized()
+{
+	if (!g_initedTimeSync)
+	{
+		g_origInitializeTime(this, _getConnectionManager(), 1, nullptr, 0, nullptr, 7, 2000, 60000);
+
+		// to make the game not try to get time from us
+		m_connectionMgr = nullptr;
+
+		g_initedTimeSync = true;
+
+		return false;
+	}
+
+	return (m_applyFlags & 4) != 0;
+}
 
 void netTimeSync::Update()
 {
@@ -1230,7 +1321,7 @@ void netTimeSync::Update()
 		return;
 	}
 
-	if (m_connectionMgr && /*m_flags & 2 && */!m_disabled)
+	if (/*m_connectionMgr /*&& m_flags & 2 && */!m_disabled)
 	{
 		uint32_t curTime = timeGetTime();
 
@@ -1305,12 +1396,13 @@ void netTimeSync::HandleTimeSync(net::Buffer& buffer)
 
 			m_retryCount = 0;
 
-			if (!(m_applyFlags & 1))
+			// use flag 4 to reset time at least once, even if game session code has done so to a higher value
+			if (!(m_applyFlags & 4))
 			{
-				m_appliedDelta = m_timeDelta + timeGetTime();
+				m_lastTime = m_timeDelta + timeGetTime();
 			}
 
-			m_applyFlags |= 3;
+			m_applyFlags |= 7;
 		}
 		else
 		{
@@ -1330,6 +1422,11 @@ void netTimeSync::HandleTimeSync(net::Buffer& buffer)
 
 static netTimeSync** g_netTimeSync;
 
+bool IsWaitingForTimeSync()
+{
+	return !(*g_netTimeSync)->IsInitialized();
+}
+
 static InitFunction initFunctionTime([]()
 {
 	NetLibrary::OnNetLibraryCreate.Connect([](NetLibrary* lib)
@@ -1342,11 +1439,24 @@ static InitFunction initFunctionTime([]()
 	});
 });
 
+bool netTimeSync__InitializeTimeStub(netTimeSync* timeSync, void* connectionMgr, int flags, void* trustHost,
+	uint32_t sessionSeed, int* deltaStart, int packetFlags, int initialBackoff, int maxBackoff)
+{
+	if (!Instance<ICoreGameInit>::Get()->OneSyncEnabled)
+	{
+		return g_origInitializeTime(timeSync, connectionMgr, flags, trustHost, sessionSeed, deltaStart, packetFlags, initialBackoff, maxBackoff);
+	}
+
+	timeSync->SetConnectionManager(connectionMgr);
+
+	return true;
+}
+
 static HookFunction hookFunctionTime([]()
 {
-	/*MH_Initialize();
-	
-	MH_EnableHook(MH_ALL_HOOKS);*/
+	MH_Initialize();
+	MH_CreateHook(hook::get_pattern("48 8B D9 48 39 79 08 0F 85 B5 00 00 00", -32), netTimeSync__InitializeTimeStub, (void**)&g_origInitializeTime);
+	MH_EnableHook(MH_ALL_HOOKS);
 
 	g_netTimeSync = hook::get_address<netTimeSync**>(hook::get_pattern("EB 16 48 8B 0D ? ? ? ? 45 33 C9 45 33 C0", 5));
 
@@ -1430,21 +1540,13 @@ static HookFunction hookFunctionWorldGrid([]()
 
 int ObjectToEntity(int objectId)
 {
-	int playerIdx = (objectId >> 16) - 1;
-	int objectIdx = (objectId & 0xFFFF);
-
 	int entityIdx = -1;
+	auto object = TheClones->GetNetObject(objectId & 0xFFFF);
 
-	rage::netObjectMgr::GetInstance()->ForAllNetObjects(playerIdx, [&](rage::netObject* obj)
+	if (object)
 	{
-		char* objectChar = (char*)obj;
-		uint16_t thisObjectId = *(uint16_t*)(objectChar + 10);
-
-		if (objectIdx == thisObjectId)
-		{
-			entityIdx = getScriptGuidForEntity(obj->GetGameObject());
-		}
-	});
+		entityIdx = getScriptGuidForEntity(object->GetGameObject());
+	}
 
 	return entityIdx;
 }
@@ -1501,6 +1603,28 @@ static InitFunction initFunction([]()
 	OnKillNetworkDone.Connect([]()
 	{
 		trackedObjects.clear();
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("NETWORK_GET_ENTITY_OWNER", [](fx::ScriptContext& context)
+	{
+		fwEntity* entity = (fwEntity*)getScriptEntity(context.GetArgument<int>(0));
+		
+		if (!entity)
+		{
+			context.SetResult<int>(-1);
+			return;
+		}
+
+		rage::netObject* netObj = (rage::netObject*)entity->GetNetObject();
+
+		if (!netObj)
+		{
+			context.SetResult<int>(-1);
+			return;
+		}
+
+		auto owner = netObject__GetOwnerNetPlayer(netObj);
+		context.SetResult<int>(owner->physicalPlayerIndex);
 	});
 #if 0
 	fx::ScriptEngine::RegisterNativeHandler("EXPERIMENTAL_SAVE_CLONE_CREATE", [](fx::ScriptContext& context)

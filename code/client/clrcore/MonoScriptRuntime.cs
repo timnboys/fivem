@@ -33,7 +33,7 @@ namespace CitizenFX.Core
 
 				m_intManager = (InternalManager)m_appDomain.CreateInstanceAndUnwrap(typeof(InternalManager).Assembly.FullName, typeof(InternalManager).FullName);
 
-				// TODO: figure out a cleaner solution so server doesn't have to be slower
+				// TODO: figure out a cleaner solution to Mono JIT corruption so server doesn't have to be slower
 #if IS_FXSERVER
 				m_intManager.SetScriptHost(new WrapScriptHost(host), m_instanceId);
 #else
@@ -249,9 +249,9 @@ namespace CitizenFX.Core
 				m_realHost = realHost;
 			}
 
-			public void InvokeNative([MarshalAs(UnmanagedType.Struct)] ref fxScriptContext context)
+			public void InvokeNative([MarshalAs(UnmanagedType.Struct)] IntPtr context)
 			{
-				m_realHost.InvokeNative(ref context);
+				m_realHost.InvokeNative(context);
 			}
 
 			[return: MarshalAs(UnmanagedType.Interface)]

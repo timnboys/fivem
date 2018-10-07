@@ -164,8 +164,8 @@ const int WheelRimRadiusOffset = 0x114;
 const int WheelTyreWidthOffset = 0x118;
 const int WheelRotationSpeedOffset = 0x168;
 const int WheelHealthOffset = 0x1E0;
-const int WheelXRotOffset = 0x008;
-const int WheelInvXRotOffset = 0x010;
+const int WheelYRotOffset = 0x008;
+const int WheelInvYRotOffset = 0x010;
 
 static std::unordered_set<fwEntity*> g_deletionTraces;
 static std::unordered_set<void*> g_deletionTraces2;
@@ -231,6 +231,32 @@ static void DeleteNetworkCloneWrap(void* objectMgr, void* netObject, int reason,
 
 static HookFunction initFunction([]()
 {
+	// not a vehicle native
+	static uint32_t setAngVelocityOffset = *hook::get_pattern<uint32_t>("75 11 48 8B 06 48 8D 54 24 20 48 8B CE FF 90", 15) / 8;
+
+	fx::ScriptEngine::RegisterNativeHandler("SET_ENTITY_ROTATION_VELOCITY", [](fx::ScriptContext& context)
+	{
+		fwEntity* entity = getScriptEntity(context.GetArgument<int>(0));
+
+		if (!entity)
+		{
+			trace("Invalid entity ID passed to SET_ENTITY_ROTATION_VELOCITY.\n");
+			return;
+		}
+
+		auto vtbl = *(uintptr_t**)entity;
+		auto setAngularVelocity = (void(*)(fwEntity*, float*))vtbl[setAngVelocityOffset];
+
+		alignas(16) float newVelocity[4];
+		newVelocity[0] = context.GetArgument<float>(1);
+		newVelocity[1] = context.GetArgument<float>(2);
+		newVelocity[2] = context.GetArgument<float>(3);
+		newVelocity[3] = 0.0f;
+
+		setAngularVelocity(entity, newVelocity);
+	});
+
+	// vehicle natives
 	fx::ScriptEngine::RegisterNativeHandler("GET_VEHICLE_FUEL_LEVEL", readVehicleMemory<float, FuelLevelOffset>);
 	fx::ScriptEngine::RegisterNativeHandler("SET_VEHICLE_FUEL_LEVEL", writeVehicleMemory<float, FuelLevelOffset>);
 
@@ -340,15 +366,15 @@ static HookFunction initFunction([]()
 		*reinterpret_cast<float *>(wheelAddr + WheelHealthOffset) = context.GetArgument<float>(2);
 	}));
 
-	fx::ScriptEngine::RegisterNativeHandler("GET_VEHICLE_WHEEL_XROT", makeWheelFunction([](fx::ScriptContext& context, fwEntity* vehicle, uintptr_t wheelAddr)
+	fx::ScriptEngine::RegisterNativeHandler("GET_VEHICLE_WHEEL_Y_ROTATION", makeWheelFunction([](fx::ScriptContext& context, fwEntity* vehicle, uintptr_t wheelAddr)
 	{
-		context.SetResult<float>(*reinterpret_cast<float *>(wheelAddr + WheelXRotOffset));
+		context.SetResult<float>(*reinterpret_cast<float *>(wheelAddr + WheelYRotOffset));
 	}));
 
-	fx::ScriptEngine::RegisterNativeHandler("SET_VEHICLE_WHEEL_XROT", makeWheelFunction([](fx::ScriptContext& context, fwEntity* vehicle, uintptr_t wheelAddr)
+	fx::ScriptEngine::RegisterNativeHandler("SET_VEHICLE_WHEEL_Y_ROTATION", makeWheelFunction([](fx::ScriptContext& context, fwEntity* vehicle, uintptr_t wheelAddr)
 	{
-		*reinterpret_cast<float *>(wheelAddr + WheelXRotOffset) = context.GetArgument<float>(2);
-		*reinterpret_cast<float *>(wheelAddr + WheelInvXRotOffset) = -(context.GetArgument<float>(2));
+		*reinterpret_cast<float *>(wheelAddr + WheelYRotOffset) = context.GetArgument<float>(2);
+		*reinterpret_cast<float *>(wheelAddr + WheelInvYRotOffset) = -(context.GetArgument<float>(2));
 	}));
 
 	fx::ScriptEngine::RegisterNativeHandler("GET_VEHICLE_STEERING_ANGLE", [](fx::ScriptContext& context)

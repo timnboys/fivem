@@ -27,7 +27,7 @@ inline bool shouldRead(SyncParseState& state, const std::tuple<int, int, int>& i
 	}
 
 	// because we hardcode this sync type to 0 (mA0), we can assume it's not used
-	if (std::get<2>(ids) != 0)
+	if (std::get<2>(ids) && !(state.objType & std::get<2>(ids)))
 	{
 		return false;
 	}
@@ -51,7 +51,7 @@ inline bool shouldWrite(SyncUnparseState& state, const std::tuple<int, int, int>
 	}
 
 	// because we hardcode this sync type to 0 (mA0), we can assume it's not used
-	if (std::get<2>(ids) != 0)
+	if (std::get<2>(ids) && !(state.objType & std::get<2>(ids)))
 	{
 		return false;
 	}
@@ -219,11 +219,12 @@ struct SyncTree : public SyncTreeBase
 	virtual void Parse(SyncParseState& state) override
 	{
 		//trace("parsing root\n");
+		state.objType = 0;
 
 		if (state.syncType == 2 || state.syncType == 4)
 		{
 			// mA0 flag
-			state.buffer.ReadBit();
+			state.objType = state.buffer.ReadBit();
 		}
 
 		root.Parse(state);
@@ -231,9 +232,13 @@ struct SyncTree : public SyncTreeBase
 
 	virtual bool Unparse(SyncUnparseState& state) override
 	{
+		state.objType = 0;
+
 		if (state.syncType == 2 || state.syncType == 4)
 		{
-			state.buffer.WriteBit(0);
+			state.objType = 1;
+
+			state.buffer.WriteBit(1);
 		}
 
 		return root.Unparse(state);
@@ -407,12 +412,26 @@ struct CPedGameStateDataNode
 		{
 			vehicleId = state.buffer.Read<int>(13);
 
+			state.entity->data["curVehicle"] = int32_t(vehicleId);
+			state.entity->data["curVehicleSeat"] = int32_t(-2);
+
 			auto inSeat = state.buffer.ReadBit();
 
 			if (inSeat)
 			{
 				vehicleSeat = state.buffer.Read<int>(5);
+				state.entity->data["curVehicleSeat"] = int32_t(vehicleSeat);
 			}
+			else
+			{
+				state.entity->data["curVehicle"] = -1;
+				state.entity->data["curVehicleSeat"] = -1;
+			}
+		}
+		else
+		{
+			state.entity->data["curVehicle"] = -1;
+			state.entity->data["curVehicleSeat"] = -1;
 		}
 
 		// TODO
@@ -421,9 +440,67 @@ struct CPedGameStateDataNode
 	}
 };
 
-struct CEntityOrientationDataNode { bool Parse(SyncParseState& state) { return true; } };
-struct CPhysicalVelocityDataNode { bool Parse(SyncParseState& state) { return true; } };
-struct CVehicleAngVelocityDataNode { bool Parse(SyncParseState& state) { return true; } };
+struct CEntityOrientationDataNode
+{
+	bool Parse(SyncParseState& state)
+	{
+		auto rotX = state.buffer.ReadSigned<int>(9) * 0.015625f;
+		auto rotY = state.buffer.ReadSigned<int>(9) * 0.015625f;
+		auto rotZ = state.buffer.ReadSigned<int>(9) * 0.015625f;
+
+		state.entity->data["rotX"] = rotX;
+		state.entity->data["rotY"] = rotY;
+		state.entity->data["rotZ"] = rotZ;
+
+		return true;
+	}
+};
+
+struct CPhysicalVelocityDataNode
+{
+	bool Parse(SyncParseState& state)
+	{
+		auto velX = state.buffer.ReadSigned<int>(12) * 0.0625f;
+		auto velY = state.buffer.ReadSigned<int>(12) * 0.0625f;
+		auto velZ = state.buffer.ReadSigned<int>(12) * 0.0625f;
+
+		state.entity->data["velX"] = velX;
+		state.entity->data["velY"] = velY;
+		state.entity->data["velZ"] = velZ;
+
+		return true;
+	}
+};
+
+struct CVehicleAngVelocityDataNode
+{
+	bool Parse(SyncParseState& state)
+	{
+		auto hasNoVelocity = state.buffer.ReadBit();
+
+		if (!hasNoVelocity)
+		{
+			auto velX = state.buffer.ReadSigned<int>(10) * 0.03125f;
+			auto velY = state.buffer.ReadSigned<int>(10) * 0.03125f;
+			auto velZ = state.buffer.ReadSigned<int>(10) * 0.03125f;
+
+			state.entity->data["angVelX"] = velX;
+			state.entity->data["angVelY"] = velY;
+			state.entity->data["angVelZ"] = velZ;
+		}
+		else
+		{
+			state.entity->data["angVelX"] = 0.0f;
+			state.entity->data["angVelY"] = 0.0f;
+			state.entity->data["angVelZ"] = 0.0f;
+
+			state.buffer.ReadBit();
+		}
+
+		return true;
+	}
+};
+
 struct CVehicleSteeringDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CVehicleControlDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CVehicleGadgetDataNode { bool Parse(SyncParseState& state) { return true; } };
@@ -444,7 +521,21 @@ struct CObjectGameStateDataNode { bool Parse(SyncParseState& state) { return tru
 struct CObjectScriptGameStateDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CPhysicalHealthDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CObjectSectorPosNode { bool Parse(SyncParseState& state) { return true; } };
-struct CPhysicalAngVelocityDataNode { bool Parse(SyncParseState& state) { return true; } };
+struct CPhysicalAngVelocityDataNode
+{
+	bool Parse(SyncParseState& state)
+	{
+		auto velX = state.buffer.ReadSigned<int>(10) * 0.03125f;
+		auto velY = state.buffer.ReadSigned<int>(10) * 0.03125f;
+		auto velZ = state.buffer.ReadSigned<int>(10) * 0.03125f;
+
+		state.entity->data["angVelX"] = velX;
+		state.entity->data["angVelY"] = velY;
+		state.entity->data["angVelZ"] = velZ;
+
+		return true;
+	}
+};
 //struct CPedCreationDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CPedScriptCreationDataNode { bool Parse(SyncParseState& state) { return true; } };
 //struct CPedGameStateDataNode { bool Parse(SyncParseState& state) { return true; } };
@@ -518,7 +609,69 @@ struct CPlayerSectorPosNode
 	}
 };
 
-struct CPlayerCameraDataNode { bool Parse(SyncParseState& state) { return true; } };
+struct CPlayerCameraDataNode
+{
+	bool Parse(SyncParseState& state)
+	{
+		bool freeCamOverride = state.buffer.ReadBit();
+
+		if (freeCamOverride)
+		{
+			bool unk = state.buffer.ReadBit();
+
+			float freeCamPosX = state.buffer.ReadSignedFloat(19, 27648.0f);
+			float freeCamPosY = state.buffer.ReadSignedFloat(19, 27648.0f);
+			float freeCamPosZ = state.buffer.ReadFloat(19, 4416.0f) - 1700.0f;
+
+			// 2pi
+			float cameraX = state.buffer.ReadSignedFloat(10, 6.2831855f);
+			float cameraZ = state.buffer.ReadSignedFloat(10, 6.2831855f);
+
+			state.entity->data["camMode"] = 1;
+			state.entity->data["freeCamPosX"] = freeCamPosX;
+			state.entity->data["freeCamPosY"] = freeCamPosY;
+			state.entity->data["freeCamPosZ"] = freeCamPosZ;
+
+			state.entity->data["cameraX"] = cameraX;
+			state.entity->data["cameraZ"] = cameraZ;
+		}
+		else
+		{
+			bool hasPositionOffset = state.buffer.ReadBit();
+			state.buffer.ReadBit();
+
+			if (hasPositionOffset)
+			{
+				float camPosX = state.buffer.ReadSignedFloat(19, 27648.0f);
+				float camPosY = state.buffer.ReadSignedFloat(19, 27648.0f);
+				float camPosZ = state.buffer.ReadFloat(19, 4416.0f) - 1700.0f;
+
+				state.entity->data["camMode"] = 2;
+
+				state.entity->data["camOffX"] = camPosX;
+				state.entity->data["camOffY"] = camPosY;
+				state.entity->data["camOffZ"] = camPosZ;
+			}
+			else
+			{
+				state.entity->data["camMode"] = 0;
+			}
+
+			float cameraX = state.buffer.ReadSignedFloat(10, 6.2831855f);
+			float cameraZ = state.buffer.ReadSignedFloat(10, 6.2831855f);
+
+			state.entity->data["cameraX"] = cameraX;
+			state.entity->data["cameraZ"] = cameraZ;
+
+			// TODO
+		}
+
+		// TODO
+
+		return true;
+	}
+};
+
 struct CPlayerWantedAndLOSDataNode { bool Parse(SyncParseState& state) { return true; } };
 
 using CAutomobileSyncTree = SyncTree<

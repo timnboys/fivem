@@ -48,7 +48,7 @@ void MumbleVoice_BindNetLibrary(NetLibrary* library)
 	{
 		g_mumbleAllowed = false;
 
-		Instance<HttpClient>::Get()->DoGetRequest(fmt::sprintf("http://%s:%d/info.json", addr.GetAddress(), addr.GetPort()), [=](bool success, const char* data, size_t size)
+		/*Instance<HttpClient>::Get()->DoGetRequest(fmt::sprintf("http://%s:%d/info.json", addr.GetAddress(), addr.GetPort()), [=](bool success, const char* data, size_t size)
 		{
 			if (success)
 			{
@@ -84,7 +84,7 @@ void MumbleVoice_BindNetLibrary(NetLibrary* library)
 					trace("Server policy - Mumble check failed for %s\n", e.what());
 				}
 			}
-		});
+		});*/
 	});
 }
 
@@ -316,7 +316,7 @@ static void Mumble_RunFrame()
 
 	// handle PTT
 	auto isControlPressed = fx::ScriptEngine::GetNativeHandler(0xF3A21BCD95725A4A);
-	fx::ScriptContext cxt;
+	fx::ScriptContextBuffer cxt;
 
 	cxt.Push(0);
 	cxt.Push(249); // INPUT_PUSH_TO_TALK
@@ -508,7 +508,7 @@ public:
 	template<typename R, typename... Args>
 	static inline R Invoke(const boost::optional<fx::TNativeHandler>& handler, Args... args)
 	{
-		fx::ScriptContext cxt;
+		fx::ScriptContextBuffer cxt;
 
 		pass{ ([&]()
 		{

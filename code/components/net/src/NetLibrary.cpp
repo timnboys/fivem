@@ -14,6 +14,9 @@
 #include <yaml-cpp/yaml.h>
 #include <SteamComponentAPI.h>
 #include <LegitimacyAPI.h>
+#include <IteratorView.h>
+
+#include <json.hpp>
 
 #include <Error.h>
 
@@ -412,10 +415,31 @@ void NetLibrary::HandleReliableCommand(uint32_t msgType, const char* buf, size_t
 {
 	auto range = m_reliableHandlers.equal_range(msgType);
 
-	std::for_each(range.first, range.second, [&] (std::pair<uint32_t, ReliableHandlerType> handler)
+	for (auto& handlerPair : fx::GetIteratorView(range))
 	{
-		handler.second(buf, length);
-	});
+		auto [handler, runOnMainFrame] = handlerPair.second;
+
+		if (runOnMainFrame)
+		{
+			auto server = m_currentServerPeer;
+			net::Buffer netBuf(reinterpret_cast<const uint8_t*>(buf), length);
+
+			m_mainFrameQueue.push([this, netBuf, handler, server]()
+			{
+				if (server != m_currentServerPeer)
+				{
+					trace("Ignored a network packet enqueued before reconnection.\n");
+					return;
+				}
+
+				handler(reinterpret_cast<const char*>(netBuf.GetBuffer()), netBuf.GetLength());
+			});
+		}
+		else
+		{
+			handler(buf, length);
+		}
+	}
 }
 
 RoutingPacket::RoutingPacket()
@@ -453,6 +477,16 @@ inline uint64_t GetGUID()
 	}
 
 	return (uint64_t)(0x210000100000000 | m_tempGuid);
+}
+
+void NetLibrary::RunMainFrame()
+{
+	std::function<void()> cb;
+
+	while (m_mainFrameQueue.try_pop(cb))
+	{
+		cb();
+	}
 }
 
 void NetLibrary::RunFrame()
@@ -798,19 +832,59 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 
 			if (Instance<ICoreGameInit>::Get()->OneSyncEnabled)
 			{
-				m_httpClient->DoGetRequest(fmt::sprintf("https://runtime.fivem.net/policy/onesync?server=%s_%d", address.GetHost(), address.GetPort()), [=](bool success, const char* data, size_t length)
+				auto oneSyncFailure = [this]()
 				{
-					if (success)
-					{
-						if (std::string(data, length).find("yes") != std::string::npos)
-						{
-							m_connectionState = CS_INITRECEIVED;
-							return;
-						}
-					}
-
 					OnConnectionError("OneSync is not whitelisted for this server, or requesting whitelist status failed. You'll have to wait a little while longer!");
 					m_connectionState = CS_IDLE;
+				};
+
+				auto oneSyncSuccess = [this]()
+				{
+					m_connectionState = CS_INITRECEIVED;
+				};
+
+				m_httpClient->DoGetRequest(fmt::sprintf("http://%s:%d/info.json", address.GetHost(), address.GetPort()), [=](bool success, const char* data, size_t size)
+				{
+					using json = nlohmann::json;
+
+					if (success)
+					{
+						try
+						{
+							json info = json::parse(data, data + size);
+
+							if (info.is_object() && info["vars"].is_object())
+							{
+								auto val = info["vars"].value("sv_licenseKeyToken", "");
+
+								if (!val.empty())
+								{
+									m_httpClient->DoGetRequest(fmt::sprintf("https://policy-live.fivem.net/api/policy/%s/onesync", val), [=](bool success, const char* data, size_t size)
+									{
+										if (success)
+										{
+											if (std::string(data, size).find("yes") != std::string::npos)
+											{
+												oneSyncSuccess();
+
+												return;
+											}
+										}
+
+										oneSyncFailure();
+									});
+
+									return;
+								}
+							}
+						}
+						catch (std::exception& e)
+						{
+							trace("1s policy - get failed for %s\n", e.what());
+						}
+
+						oneSyncFailure();
+					}
 				});
 			}
 			else
@@ -1097,11 +1171,11 @@ void NetLibrary::SendData(const NetAddress& address, const char* data, size_t le
 	m_impl->SendData(address, data, length);
 }
 
-void NetLibrary::AddReliableHandler(const char* type, const ReliableHandlerType& function)
+void NetLibrary::AddReliableHandler(const char* type, const ReliableHandlerType& function, bool runOnMainThreadOnly /* = false */)
 {
 	uint32_t hash = HashRageString(type);
 
-	m_reliableHandlers.insert({ hash, function });
+	m_reliableHandlers.insert({ hash, { function, runOnMainThreadOnly } });
 }
 
 void NetLibrary::DownloadsComplete()

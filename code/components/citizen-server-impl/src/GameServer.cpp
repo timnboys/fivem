@@ -73,7 +73,9 @@ namespace fx
 	{
 		g_gameServer = this;
 
-		seCreateContext(&m_seContext);
+		// TODO: re-enable this when we actually figure out threading
+		//seCreateContext(&m_seContext);
+		m_seContext = seGetCurrentContext();
 
 		m_seContext->MakeCurrent();
 		m_seContext->AddAccessControlEntry(se::Principal{ "system.console" }, se::Object{ "command" }, se::AccessType::Allow);
@@ -241,7 +243,7 @@ namespace fx
 
 	void GameServer::InternalSendPacket(int peer, int channel, const net::Buffer& buffer, ENetPacketFlag flags)
 	{
-		auto packet = enet_packet_create(buffer.GetBuffer(), buffer.GetLength(), flags);
+		auto packet = enet_packet_create(buffer.GetBuffer(), buffer.GetCurOffset(), flags);
 		enet_peer_send(m_peerHandles.left.find(peer)->get_right(), channel, packet);
 	}
 

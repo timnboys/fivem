@@ -984,6 +984,14 @@ native 'IS_PLAYER_ACE_ALLOWED'
 	}
 	apiset 'server'
 	returns 'BOOL'
+	
+native 'IS_PRINCIPAL_ACE_ALLOWED'
+	arguments {
+		charPtr 'principal',
+		charPtr 'object'
+	}
+	apiset 'shared'
+	returns 'BOOL'
 
 native 'FIND_FIRST_PED'
 	arguments {
@@ -1087,6 +1095,25 @@ native 'SET_VEHICLE_AUTO_REPAIR_DISABLED'
 	<param name="vehicle">The vehicle to set disable auto vehicle repair.</param>
 	<param name="value">Setting the value to  true prevents the vehicle from being repaired when a extra is enabled. Setting the value to false allows the vehicle from being repaired when a extra is enabled.</param>
 	]]
+	
+native 'SET_ENTITY_ROTATION_VELOCITY'
+	arguments {
+		Entity 'entity',
+		float 'x',
+		float 'y',
+		float 'z'
+	}
+	apiset 'client'
+	returns 'void'
+	doc [[
+	<summary>
+	The reverse of GET_VEHICLE_ROTATION_VELOCITY.
+	</summary>
+	<param name="entity">The target entity.</param>
+	<param name="x">X component of the vector.</param>
+	<param name="y">Y component of the vector.</param>
+	<param name="z">Z component of the vector.</param>
+]]
 
 native 'GET_VEHICLE_FUEL_LEVEL'
 	arguments {
@@ -1678,7 +1705,7 @@ native 'SET_VEHICLE_HANDLING_VECTOR'
 	<param name="value">The Vector3 value to set.</param>
 ]]
 
-native 'GET_VEHICLE_WHEEL_XROT'
+native 'GET_VEHICLE_WHEEL_Y_ROTATION'
 	arguments {
 		Vehicle 'vehicle',
 		int 'wheelIndex'
@@ -1686,7 +1713,7 @@ native 'GET_VEHICLE_WHEEL_XROT'
 	apiset 'client'
 	returns 'float'
 
-native 'SET_VEHICLE_WHEEL_XROT'
+native 'SET_VEHICLE_WHEEL_Y_ROTATION'
 	arguments {
 		Vehicle 'vehicle',
 		int 'wheelIndex',
@@ -1926,6 +1953,41 @@ native 'GET_ENTITY_COORDS'
 	}
 	apiset 'server'
 	returns 'Vector3'
+	
+native 'GET_ENTITY_VELOCITY'
+	arguments {
+		Entity 'entity'
+	}
+	apiset 'server'
+	returns 'Vector3'
+	
+native 'GET_ENTITY_ROTATION_VELOCITY'
+	arguments {
+		Entity 'entity'
+	}
+	apiset 'server'
+	returns 'Vector3'
+	
+native 'GET_ENTITY_ROTATION'
+	arguments {
+		Entity 'entity'
+	}
+	apiset 'server'
+	returns 'Vector3'
+	
+native 'GET_ENTITY_HEADING'
+	arguments {
+		Entity 'entity'
+	}
+	apiset 'server'
+	returns 'float'
+
+native 'NETWORK_GET_NETWORK_ID_FROM_ENTITY'
+	arguments {
+		Entity 'entity'
+	}
+	apiset 'server'
+	returns 'int'
 
 native "GET_HASH_KEY"
 	arguments {
@@ -1937,4 +1999,30 @@ native "GET_HASH_KEY"
 <summary>
 		This native converts the passed string to a hash.
 </summary>
+	]]
+
+native "SET_DISCORD_APP_ID"
+	arguments {
+		charPtr "appId",
+	}
+	apiset 'client'
+	returns	"void"
+	doc [[!
+<summary>
+		This native sets the app id for the discord rich presence implementation.
+</summary>
+<param name="appId">A valid Discord API App Id, can be generated at https://discordapp.com/developers/applications/</param>
+	]]
+
+native "SET_DISCORD_RICH_PRESENCE_ASSET"
+	arguments {
+		charPtr "assetName",
+	}
+	apiset 'client'
+	returns	"void"
+	doc [[!
+<summary>
+		This native sets the image asset for the discord rich presence implementation.
+</summary>
+<param name="assetName">The name of a valid asset registered on Discordapp's developer dashboard. note that the asset has to be registered under the same discord API application set using the SET_DISCORD_APP_ID native.</param>
 	]]

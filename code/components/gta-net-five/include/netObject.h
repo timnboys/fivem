@@ -1,5 +1,7 @@
 #pragma once
 
+#include <NetworkPlayerMgr.h>
+
 enum class NetObjEntityType;
 
 namespace rage
@@ -133,24 +135,49 @@ public:
 	virtual void m_1D0() = 0;
 	virtual void m_1D8() = 0;
 	virtual void m_1E0() = 0;
+	virtual void m_1E8() = 0;
+	virtual void m_1F0() = 0;
+	virtual void m_1F8() = 0;
+	virtual void m_200() = 0;
+	virtual void m_208() = 0;
+	virtual void m_210() = 0;
+	virtual void m_218() = 0;
+	virtual void m_220() = 0;
+	virtual void m_228() = 0;
+	virtual void m_230() = 0;
+	virtual void m_238() = 0;
+	virtual void m_240() = 0;
+	virtual void m_248() = 0;
+	virtual void m_250() = 0;
+	virtual void m_258() = 0;
+	virtual void m_260() = 0;
+	virtual void m_268() = 0;
+	virtual void m_270() = 0;
+	virtual void m_278() = 0;
+	virtual void m_280() = 0;
+	virtual void m_288() = 0;
+	virtual void m_290() = 0;
+	virtual void m_298() = 0;
+	virtual void m_2A0() = 0;
+	virtual void m_2A8() = 0;
+	virtual void m_2B0() = 0;
+	virtual void m_2B8() = 0;
+	virtual void m_2C0() = 0;
+	virtual void m_2C8() = 0;
+	virtual void m_2D0() = 0;
+	virtual void m_2D8() = 0;
+	virtual void m_2E0() = 0;
+	virtual void m_2E8() = 0;
+	virtual void m_2F0() = 0;
+	virtual void m_2F8() = 0;
+	virtual void m_300() = 0;
+	virtual void m_308() = 0;
+	virtual void m_310() = 0;
+	virtual void m_318() = 0;
+	virtual void m_320() = 0;
+	virtual void UpdatePendingVisibilityChanges() = 0;
 };
 
 netObject* CreateCloneObject(NetObjEntityType type, uint16_t objectId, uint8_t a2, int a3, int a4);
 }
 
-
-class CNetGamePlayer
-{
-public:
-	virtual ~CNetGamePlayer() = 0;
-
-public:
-	uint8_t pad[8];
-	void* nonPhysicalPlayerData;
-	uint8_t pad2[20];
-	uint8_t activePlayerIndex;
-	uint8_t physicalPlayerIndex;
-	uint8_t pad3[2];
-	uint8_t pad4[120];
-	void* playerInfo;
-};
