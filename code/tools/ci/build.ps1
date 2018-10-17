@@ -50,7 +50,7 @@ function Invoke-BatchFile
 
 $inCI = $false
 $Triggerer = "$env:USERDOMAIN\$env:USERNAME"
-$UploadBranch = "canary"
+$UploadBranch = "build"
 $IsServer = $false
 $UploadType = "client"
 
