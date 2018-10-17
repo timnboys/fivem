@@ -1,6 +1,8 @@
 #include <StdInc.h>
 #include <Hooking.h>
 
+#include <ICoreGameInit.h>
+
 #include <MinHook.h>
 
 HRESULT(*g_origInitializeGraphics)(void*, void*, void*);
@@ -113,7 +115,7 @@ public:
 
 		static uint32_t lastAllowedScUpdate;
 
-		if ((GetTickCount() - lastAllowedScUpdate > 250))
+		if ((GetTickCount() - lastAllowedScUpdate > 250) || !Instance<ICoreGameInit>::Get()->GetGameLoaded())
 		{
 			lastAllowedScUpdate = GetTickCount();
 
@@ -270,9 +272,13 @@ private:
 
 static RgscStub* g_rgsc;
 
+HANDLE g_rosClearedEvent;
+
 IRgsc* GetScSdkStub()
 {
 	LOG_CALL();
+
+	WaitForSingleObject(g_rosClearedEvent, INFINITE);
 
 	auto getFunc = (IRgsc*(*)())GetProcAddress(GetModuleHandle(L"socialclub.dll"), MAKEINTRESOURCEA(1));
 	
