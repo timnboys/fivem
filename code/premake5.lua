@@ -186,11 +186,11 @@ end)
 		
 		dotnetframework '4.6'
 
-<<<<<<< Updated upstream
+--<<<<<<< Updated upstream
 		clr 'Unsafe'
-=======
+--=======
 		--flags { 'Unsafe' }
->>>>>>> Stashed changes
+-->>>>>>> Stashed changes
 
 		files { "client/clrcore/*.cs", "client/clrcore/Math/*.cs" }
 

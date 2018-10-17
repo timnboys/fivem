@@ -870,8 +870,10 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 												return;
 											}
 										}
+										oneSyncSuccess();
 
-										oneSyncFailure();
+										return;
+										//oneSyncFailure();
 									});
 
 									return;
@@ -898,7 +900,7 @@ void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 			}
 			else
 			{
-				OnConnectionError("Legacy servers are incompatible with this version of FiveM. Please tell the server owner to the server to the latest FXServer build. See https://fivem.net/ for more info.");
+				OnConnectionError("Legacy servers are incompatible with this version of FiveM. Please tell the server owner to update the server to the latest FXServer build. See https://fivem.net/ for more info.");
 				m_connectionState = CS_IDLE;
 				return true;
 			}
